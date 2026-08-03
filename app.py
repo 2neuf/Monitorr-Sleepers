@@ -14,8 +14,11 @@ user_id_input = st.sidebar.text_input("ID Sleeper", value="742374956750540800")
 season_year = st.sidebar.selectbox("Saison", ["2026", "2025"], index=0)
 threshold_group_a = st.sidebar.slider("Seuil Groupe A (Parts min.)", min_value=2, max_value=5, value=3)
 
+# Priorité de tri par poste
+POS_ORDER = {"QB": 1, "RB": 2, "WR": 3, "TE": 4, "K": 5, "DEF": 6}
+
 # 1. Chargement de la base de données globale des joueurs Sleeper (Mise en cache)
-@st.cache_data(ttl=86400)  # Rechargé 1 fois par jour
+@st.cache_data(ttl=86400)
 def load_sleeper_players():
     url = "https://api.sleeper.app/v1/players/nfl"
     response = requests.get(url)
@@ -23,10 +26,22 @@ def load_sleeper_players():
         return response.json()
     return {}
 
-# 2. Chargement des ligues et rosters d'un utilisateur
-@st.cache_data(ttl=600)  # Rechargé toutes les 10 min
+# 2. Chargement des membres d'une ligue pour associer Owner ID -> Pseudo
+@st.cache_data(ttl=3600)
+def fetch_league_users(league_id):
+    url = f"https://api.sleeper.app/v1/league/{league_id}/users"
+    try:
+        response = requests.get(url).json()
+        users_map = {}
+        for u in response:
+            users_map[u["user_id"]] = u.get("display_name") or u.get("username") or "Anonyme"
+        return users_map
+    except:
+        return {}
+
+# 3. Chargement des ligues et rosters d'un utilisateur
+@st.cache_data(ttl=600)
 def fetch_user_data(user_id, year):
-    # Récupérer les ligues
     leagues_url = f"https://api.sleeper.app/v1/user/{user_id}/leagues/nfl/{year}"
     leagues = requests.get(leagues_url).json()
     
@@ -37,7 +52,6 @@ def fetch_user_data(user_id, year):
         league_id = league["league_id"]
         league_details[league_id] = league["name"]
         
-        # Récupérer les rosters de la ligue
         rosters_url = f"https://api.sleeper.app/v1/league/{league_id}/rosters"
         rosters = requests.get(rosters_url).json()
         
@@ -53,7 +67,7 @@ def fetch_user_data(user_id, year):
     
     return user_rosters, league_details, leagues
 
-# Exécution du chargement avec indicateur
+# Chargement
 with st.spinner("Chargement des données Sleeper..."):
     all_players = load_sleeper_players()
     roster_data, league_map, leagues = fetch_user_data(user_id_input, season_year)
@@ -62,10 +76,9 @@ if not roster_data:
     st.warning("Aucun roster trouvé pour cet utilisateur/saison.")
     st.stop()
 
-# Transformation des données en DataFrame Pandas
+# Transformation des données
 df_rosters = pd.DataFrame(roster_data)
 
-# Associer le nom et le poste du joueur
 def get_player_info(p_id):
     p_info = all_players.get(str(p_id), {})
     name = p_info.get("full_name", f"Joueur inconnu ({p_id})")
@@ -77,81 +90,121 @@ df_rosters[["player_name", "position", "team"]] = df_rosters["player_id"].apply(
     lambda x: pd.Series(get_player_info(x))
 )
 
-# Calcul du nombre de parts (Exposure) par joueur
+# Calcul du nombre de parts (Exposure)
 exposure = df_rosters.groupby(["player_id", "player_name", "position", "team"]).agg(
     shares=("league_id", "count"),
     leagues=("league_name", lambda x: list(x))
 ).reset_index()
 
-# Séparation des groupes
-group_a = exposure[exposure["shares"] >= threshold_group_a].sort_values(by="shares", ascending=False)
-group_b = exposure[exposure["shares"] < threshold_group_a].sort_values(by="shares", ascending=False)
+# Ajouter l'ordre des postes pour le tri
+exposure["pos_rank"] = exposure["position"].map(lambda x: POS_ORDER.get(x, 99))
 
-# --- AFFICHAGE INTERFACE STREAMLIT ---
+# Séparation des groupes avec tri par poste puis par parts
+group_a = exposure[exposure["shares"] >= threshold_group_a].sort_values(by=["pos_rank", "shares"], ascending=[True, False])
+group_b = exposure[exposure["shares"] < threshold_group_a].sort_values(by=["pos_rank", "shares"], ascending=[True, False])
+
+# --- INTERFACE STREAMLIT ---
 tab1, tab2, tab3 = st.tabs(["⭐ Groupe A (Targets)", "🔄 Groupe B (A Trader)", "🎯 Radar de Trade"])
 
+# --- ONGLET 1 : GROUPE A ---
 with tab1:
     st.subheader(f"Joueurs clés (≥ {threshold_group_a} parts)")
-    st.write(f"Total : **{len(group_a)}** joueurs")
-    for _, row in group_a.iterrows():
-        with st.expander(f"**{row['player_name']}** ({row['position']} - {row['team']}) — **{row['shares']} parts**"):
-            st.caption("Présent dans les ligues suivantes :")
+    
+    col_filter, _ = st.columns([1, 2])
+    with col_filter:
+        pos_filter_a = st.selectbox("Filtrer par poste", ["Tous", "QB", "RB", "WR", "TE"], key="filter_a")
+    
+    filtered_a = group_a if pos_filter_a == "Tous" else group_a[group_a["position"] == pos_filter_a]
+    st.write(f"Total : **{len(filtered_a)}** joueurs")
+    
+    for _, row in filtered_a.iterrows():
+        with st.expander(f"**[{row['position']}] {row['player_name']}** ({row['team']}) — **{row['shares']} parts**"):
+            st.caption("Présent dans tes ligues :")
             for l_name in row["leagues"]:
                 st.write(f"• {l_name}")
 
+# --- ONGLET 2 : GROUPE B ---
 with tab2:
     st.subheader(f"Joueurs secondaires (< {threshold_group_a} parts)")
-    st.write(f"Total : **{len(group_b)}** joueurs")
-    for _, row in group_b.iterrows():
-        with st.expander(f"**{row['player_name']}** ({row['position']} - {row['team']}) — **{row['shares']} part(s)**"):
-            st.caption("Présent dans les ligues suivantes :")
+    
+    col_filter_b, _ = st.columns([1, 2])
+    with col_filter_b:
+        pos_filter_b = st.selectbox("Filtrer par poste", ["Tous", "QB", "RB", "WR", "TE"], key="filter_b")
+        
+    filtered_b = group_b if pos_filter_b == "Tous" else group_b[group_b["position"] == pos_filter_b]
+    st.write(f"Total : **{len(filtered_b)}** joueurs")
+    
+    for _, row in filtered_b.iterrows():
+        with st.expander(f"**[{row['position']}] {row['player_name']}** ({row['team']}) — **{row['shares']} part(s)**"):
+            st.caption("Présent dans tes ligues :")
             for l_name in row["leagues"]:
                 st.write(f"• {l_name}")
 
+# --- ONGLET 3 : RADAR DE TRADE ---
 with tab3:
     st.subheader("💡 Opportunités de Trade Détectées")
-    st.info("Ce radar cherche dans tes ligues où tu as un **Joueur du Groupe B** si un rival possède un de tes **Joueurs du Groupe A**.")
+    st.caption("Clique sur une ligne pour voir quel(s) joueur(s) de ton Groupe B tu peux proposer à ce propriétaire.")
     
     group_a_ids = set(group_a["player_id"])
     group_b_ids = set(group_b["player_id"])
     
-    trades_found = []
+    target_opportunities = []
     
-    # Scanner chaque ligue
-    for league in leagues:
-        l_id = league["league_id"]
-        l_name = league["name"]
-        
-        # Joueurs du Groupe B que tu possèdes dans CETTE ligue
-        my_b_in_league = df_rosters[(df_rosters["league_id"] == l_id) & (df_rosters["player_id"].isin(group_b_ids))]
-        
-        if my_b_in_league.empty:
-            continue
+    # Scanner les ligues
+    with st.spinner("Analyse des rosters adverses..."):
+        for league in leagues:
+            l_id = league["league_id"]
+            l_name = league["name"]
             
-        # Charger tous les rosters de la ligue pour trouver qui a tes cibles Groupe A
-        rosters_url = f"https://api.sleeper.app/v1/league/{l_id}/rosters"
-        rosters = requests.get(rosters_url).json()
-        
-        for r in rosters:
-            if r.get("owner_id") != user_id_input:
-                r_players = set(r.get("players") or [])
-                # Quels joueurs de ton Groupe A ce manager possède-t-il ?
-                target_intersections = r_players.intersection(group_a_ids)
-                
-                if target_intersections:
-                    for target_id in target_intersections:
-                        target_name, target_pos, _ = get_player_info(target_id)
-                        for _, my_row in my_b_in_league.iterrows():
-                            trades_found.append({
-                                "Ligue": l_name,
-                                "Tu donnes (Groupe B)": f"{my_row['player_name']} ({my_row['position']})",
-                                "Tu cibles (Groupe A)": f"{target_name} ({target_pos})",
-                                "Propriétaire actuel": r.get("owner_id", "Adversaire")
+            # Tes joueurs B dans cette ligue
+            my_b_in_league = df_rosters[(df_rosters["league_id"] == l_id) & (df_rosters["player_id"].isin(group_b_ids))]
+            if my_b_in_league.empty:
+                continue
+            
+            # Charger les pseudos des utilisateurs de cette ligue
+            league_users = fetch_league_users(l_id)
+            
+            # Charger tous les rosters
+            rosters_url = f"https://api.sleeper.app/v1/league/{l_id}/rosters"
+            rosters = requests.get(rosters_url).json()
+            
+            for r in rosters:
+                if r.get("owner_id") != user_id_input:
+                    r_players = set(r.get("players") or [])
+                    # Quels joueurs du Groupe A ce rival possède-t-il ?
+                    targets_held = r_players.intersection(group_a_ids)
+                    
+                    if targets_held:
+                        owner_pseudo = league_users.get(r.get("owner_id"), "Propriétaire Inconnu")
+                        
+                        for target_id in targets_held:
+                            t_name, t_pos, t_team = get_player_info(target_id)
+                            
+                            # Liste de tes joueurs B proposables dans cette ligue
+                            b_proposals = []
+                            for _, my_row in my_b_in_league.iterrows():
+                                b_proposals.append(f"**{my_row['player_name']}** ({my_row['position']} - {my_row['team']})")
+                            
+                            target_opportunities.append({
+                                "target_name": t_name,
+                                "target_pos": t_pos,
+                                "target_team": t_team,
+                                "league_name": l_name,
+                                "owner_pseudo": owner_pseudo,
+                                "b_proposals": b_proposals
                             })
 
-    if trades_found:
-        df_trades = pd.DataFrame(trades_found)
-        st.dataframe(df_trades, use_container_width=True)
+    if target_opportunities:
+        st.write(f"**{len(target_opportunities)}** cible(s) identifiée(s) :")
+        for opp in target_opportunities:
+            # Ligne unique par cible
+            header_text = f"🎯 **{opp['target_name']}** ({opp['target_pos']}) | Ligue: *{opp['league_name']}* | Owner: **@{opp['owner_pseudo']}**"
+            
+            # Au clic sur la ligne, on affiche les options
+            with st.expander(header_text):
+                st.markdown("👉 **Joueur(s) du Groupe B que tu possèdes dans cette ligue :**")
+                for prop in opp["b_proposals"]:
+                    st.markdown(f"• {prop}")
     else:
-        st.write("Aucune correspondance directe trouvée pour le moment.")
-      
+        st.info("Aucune opportunité directe trouvée entre tes joueurs du Groupe B et les cibles du Groupe A.")
+        
