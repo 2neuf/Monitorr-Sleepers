@@ -6,18 +6,25 @@ from datetime import datetime
 # Configuration Streamlit pour mobile
 st.set_page_config(page_title="Sleeper Roster Manager", layout="wide")
 
-# CSS pour rendre les onglets flottants/collants (Sticky Tabs) en haut lors du scroll
+# CSS : Onglets FIXES en haut de l'écran sur mobile
 st.markdown("""
     <style>
-    /* Fixe la barre d'onglets en haut de l'écran */
+    /* Fixe la barre d'onglets tout en haut sous le header Streamlit */
     div[data-testid="stTabs"] > div[role="tablist"] {
-        position: sticky;
-        top: 2.8rem;
-        background-color: var(--background-color, #0e1117);
-        z-index: 999;
-        padding-top: 0.5rem;
-        padding-bottom: 0.5rem;
-        border-bottom: 1px solid rgba(250, 250, 250, 0.1);
+        position: fixed !important;
+        top: 3.2rem !important;
+        left: 0 !important;
+        right: 0 !important;
+        width: 100% !important;
+        z-index: 99999 !important;
+        background-color: #0e1117 !important;
+        padding: 0.5rem 1rem !important;
+        border-bottom: 2px solid #262730 !important;
+    }
+    
+    /* Décale le contenu des onglets pour ne pas qu'il soit caché sous la barre fixe */
+    div[data-testid="stTabs"] > div[role="tabpanel"] {
+        margin-top: 3.5rem !important;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -256,7 +263,6 @@ with tab3:
             header_text = f"🎯 **{opp['target_name']}** ({opp['target_pos']}) - *{rank_str}* | Ligue : *{opp['league_name']}* | Owner : **@{opp['owner_pseudo']}**{status_tag}"
             
             with st.expander(header_text):
-                # HISTORIQUE SPÉCIFIQUE
                 matching_trades = [
                     (real_idx, trade) for real_idx, trade in enumerate(st.session_state["trade_history"])
                     if trade["league"] == opp["league_name"] 
@@ -292,7 +298,6 @@ with tab3:
                                 st.markdown(f"🤝 **Proposé(s) :** {trade['offered_full']}")
                     st.divider()
 
-                # NOUVELLE PROPOSITION
                 st.markdown("👉 **Nouvelle proposition pour cette cible :**")
                 
                 key_select = f"select_{opp['league_name']}_{opp['target_name']}_{opp['owner_pseudo']}_{idx}"
