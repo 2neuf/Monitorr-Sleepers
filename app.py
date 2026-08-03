@@ -19,6 +19,11 @@ user_id_input = st.sidebar.text_input("ID Sleeper", value="742374956750540800")
 season_year = st.sidebar.selectbox("Saison", ["2026", "2025"], index=0)
 threshold_group_a = st.sidebar.slider("Seuil Groupe A (Parts min.)", min_value=2, max_value=5, value=3)
 
+# Callback pour enregistrer et réinitialiser le multiselect sans erreur
+def save_trade_callback(select_key, trade_entry):
+    st.session_state["trade_history"].append(trade_entry)
+    st.session_state[select_key] = []
+
 # 1. Base de données globale des joueurs Sleeper
 @st.cache_data(ttl=86400)
 def load_sleeper_players():
@@ -41,7 +46,7 @@ def fetch_league_users(league_id):
     except:
         return {}
 
-# 3. NOUVEAU : Chargement des rosters d'une ligue (Mise en cache 10 min)
+# 3. Chargement des rosters d'une ligue (Mise en cache 10 min)
 @st.cache_data(ttl=600)
 def fetch_league_rosters(league_id):
     url = f"https://api.sleeper.app/v1/league/{league_id}/rosters"
@@ -175,7 +180,7 @@ with tab3:
                 continue
             
             league_users = fetch_league_users(l_id)
-            rosters = fetch_league_rosters(l_id)  # Apport de la mise en cache ici
+            rosters = fetch_league_rosters(l_id)
             
             for r in rosters:
                 if r.get("owner_id") != user_id_input:
@@ -248,26 +253,28 @@ with tab3:
                     key=key_select
                 )
                 
-                if st.button("📌 Enregistrer cette proposition", key=key_btn):
-                    if selected_offers:
-                        raw_names = [opp["b_names_map"][opt] for opt in selected_offers]
-                        trade_entry = {
-                            "id": f"{opp['league_name']}_{opp['target_name']}_{datetime.now().timestamp()}",
-                            "date": datetime.now().strftime("%d/%m %H:%M"),
-                            "status": "En cours",
-                            "league": opp["league_name"],
-                            "owner": opp["owner_pseudo"],
-                            "target_name": opp["target_name"],
-                            "target_full": f"{opp['target_name']} ({opp['target_pos']})",
-                            "offered_full": ", ".join(selected_offers),
-                            "offered_names": raw_names
-                        }
-                        st.session_state["trade_history"].append(trade_entry)
-                        st.session_state[key_select] = []
-                        st.success(f"Offre enregistrée pour {opp['target_name']} !")
-                        st.rerun()
-                    else:
-                        st.warning("Veuillez sélectionner au moins un joueur.")
+                # Préparation de l'entrée de trade
+                if selected_offers:
+                    raw_names = [opp["b_names_map"][opt] for opt in selected_offers]
+                    trade_entry = {
+                        "id": f"{opp['league_name']}_{opp['target_name']}_{datetime.now().timestamp()}",
+                        "date": datetime.now().strftime("%d/%m %H:%M"),
+                        "status": "En cours",
+                        "league": opp["league_name"],
+                        "owner": opp["owner_pseudo"],
+                        "target_name": opp["target_name"],
+                        "target_full": f"{opp['target_name']} ({opp['target_pos']})",
+                        "offered_full": ", ".join(selected_offers),
+                        "offered_names": raw_names
+                    }
+                    st.button(
+                        "📌 Enregistrer cette proposition",
+                        key=key_btn,
+                        on_click=save_trade_callback,
+                        args=(key_select, trade_entry)
+                    )
+                else:
+                    st.button("📌 Enregistrer cette proposition", key=key_btn, disabled=True)
 
     else:
         st.info("Aucune opportunité directe trouvée.")
