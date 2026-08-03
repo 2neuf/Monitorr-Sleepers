@@ -1,9 +1,14 @@
 import streamlit as st
 import requests
 import pandas as pd
+from datetime import datetime
 
 # Configuration de la page Streamlit pour mobile
 st.set_page_config(page_title="Sleeper Roster Manager", layout="wide")
+
+# Initialisation de l'historique des trades dans la session
+if "trade_history" not in st.session_state:
+    st.session_state["trade_history"] = []
 
 st.title("🏈 Sleeper Roster Manager")
 st.caption("Consolide tes rosters et repère tes meilleures opportunités de trade.")
@@ -17,7 +22,7 @@ threshold_group_a = st.sidebar.slider("Seuil Groupe A (Parts min.)", min_value=2
 # Priorité de tri par poste
 POS_ORDER = {"QB": 1, "RB": 2, "WR": 3, "TE": 4, "K": 5, "DEF": 6}
 
-# 1. Chargement de la base de données globale des joueurs Sleeper (Mise en cache)
+# 1. Base de données globale des joueurs Sleeper
 @st.cache_data(ttl=86400)
 def load_sleeper_players():
     url = "https://api.sleeper.app/v1/players/nfl"
@@ -26,7 +31,7 @@ def load_sleeper_players():
         return response.json()
     return {}
 
-# 2. Chargement des membres d'une ligue pour associer Owner ID -> Pseudo
+# 2. Chargement des membres d'une ligue (Owner ID -> Pseudo)
 @st.cache_data(ttl=3600)
 def fetch_league_users(league_id):
     url = f"https://api.sleeper.app/v1/league/{league_id}/users"
@@ -67,7 +72,7 @@ def fetch_user_data(user_id, year):
     
     return user_rosters, league_details, leagues
 
-# Chargement
+# Chargement des données
 with st.spinner("Chargement des données Sleeper..."):
     all_players = load_sleeper_players()
     roster_data, league_map, leagues = fetch_user_data(user_id_input, season_year)
@@ -90,16 +95,14 @@ df_rosters[["player_name", "position", "team"]] = df_rosters["player_id"].apply(
     lambda x: pd.Series(get_player_info(x))
 )
 
-# Calcul du nombre de parts (Exposure)
+# Calcul de l'exposition (Exposure)
 exposure = df_rosters.groupby(["player_id", "player_name", "position", "team"]).agg(
     shares=("league_id", "count"),
     leagues=("league_name", lambda x: list(x))
 ).reset_index()
 
-# Ajouter l'ordre des postes pour le tri
 exposure["pos_rank"] = exposure["position"].map(lambda x: POS_ORDER.get(x, 99))
 
-# Séparation des groupes avec tri par poste puis par parts
 group_a = exposure[exposure["shares"] >= threshold_group_a].sort_values(by=["pos_rank", "shares"], ascending=[True, False])
 group_b = exposure[exposure["shares"] < threshold_group_a].sort_values(by=["pos_rank", "shares"], ascending=[True, False])
 
@@ -109,9 +112,8 @@ tab1, tab2, tab3 = st.tabs(["⭐ Groupe A (Targets)", "🔄 Groupe B (A Trader)"
 # --- ONGLET 1 : GROUPE A ---
 with tab1:
     st.subheader(f"Joueurs clés (≥ {threshold_group_a} parts)")
-    
-    col_filter, _ = st.columns([1, 2])
-    with col_filter:
+    col_filter_a, _ = st.columns([1, 2])
+    with col_filter_a:
         pos_filter_a = st.selectbox("Filtrer par poste", ["Tous", "QB", "RB", "WR", "TE"], key="filter_a")
     
     filtered_a = group_a if pos_filter_a == "Tous" else group_a[group_a["position"] == pos_filter_a]
@@ -119,14 +121,12 @@ with tab1:
     
     for _, row in filtered_a.iterrows():
         with st.expander(f"**[{row['position']}] {row['player_name']}** ({row['team']}) — **{row['shares']} parts**"):
-            st.caption("Présent dans tes ligues :")
             for l_name in row["leagues"]:
                 st.write(f"• {l_name}")
 
 # --- ONGLET 2 : GROUPE B ---
 with tab2:
     st.subheader(f"Joueurs secondaires (< {threshold_group_a} parts)")
-    
     col_filter_b, _ = st.columns([1, 2])
     with col_filter_b:
         pos_filter_b = st.selectbox("Filtrer par poste", ["Tous", "QB", "RB", "WR", "TE"], key="filter_b")
@@ -136,42 +136,34 @@ with tab2:
     
     for _, row in filtered_b.iterrows():
         with st.expander(f"**[{row['position']}] {row['player_name']}** ({row['team']}) — **{row['shares']} part(s)**"):
-            st.caption("Présent dans tes ligues :")
             for l_name in row["leagues"]:
                 st.write(f"• {l_name}")
 
-# --- ONGLET 3 : RADAR DE TRADE ---
+# --- ONGLET 3 : RADAR DE TRADE & HISTORIQUE ---
 with tab3:
     st.subheader("💡 Opportunités de Trade Détectées")
-    st.caption("Clique sur une ligne pour voir quel(s) joueur(s) de ton Groupe B tu peux proposer à ce propriétaire.")
     
     group_a_ids = set(group_a["player_id"])
     group_b_ids = set(group_b["player_id"])
     
     target_opportunities = []
     
-    # Scanner les ligues
     with st.spinner("Analyse des rosters adverses..."):
         for league in leagues:
             l_id = league["league_id"]
             l_name = league["name"]
             
-            # Tes joueurs B dans cette ligue
             my_b_in_league = df_rosters[(df_rosters["league_id"] == l_id) & (df_rosters["player_id"].isin(group_b_ids))]
             if my_b_in_league.empty:
                 continue
             
-            # Charger les pseudos des utilisateurs de cette ligue
             league_users = fetch_league_users(l_id)
-            
-            # Charger tous les rosters
             rosters_url = f"https://api.sleeper.app/v1/league/{l_id}/rosters"
             rosters = requests.get(rosters_url).json()
             
             for r in rosters:
                 if r.get("owner_id") != user_id_input:
                     r_players = set(r.get("players") or [])
-                    # Quels joueurs du Groupe A ce rival possède-t-il ?
                     targets_held = r_players.intersection(group_a_ids)
                     
                     if targets_held:
@@ -180,10 +172,10 @@ with tab3:
                         for target_id in targets_held:
                             t_name, t_pos, t_team = get_player_info(target_id)
                             
-                            # Liste de tes joueurs B proposables dans cette ligue
-                            b_proposals = []
-                            for _, my_row in my_b_in_league.iterrows():
-                                b_proposals.append(f"**{my_row['player_name']}** ({my_row['position']} - {my_row['team']})")
+                            b_options = [
+                                f"{my_row['player_name']} ({my_row['position']} - {my_row['team']})"
+                                for _, my_row in my_b_in_league.iterrows()
+                            ]
                             
                             target_opportunities.append({
                                 "target_name": t_name,
@@ -191,20 +183,84 @@ with tab3:
                                 "target_team": t_team,
                                 "league_name": l_name,
                                 "owner_pseudo": owner_pseudo,
-                                "b_proposals": b_proposals
+                                "b_options": b_options
                             })
 
     if target_opportunities:
-        st.write(f"**{len(target_opportunities)}** cible(s) identifiée(s) :")
-        for opp in target_opportunities:
-            # Ligne unique par cible
-            header_text = f"🎯 **{opp['target_name']}** ({opp['target_pos']}) | Ligue: *{opp['league_name']}* | Owner: **@{opp['owner_pseudo']}**"
+        # --- FILTRES DE L'ONGLET 3 ---
+        col_f1, col_f2 = st.columns(2)
+        
+        all_leagues = ["Toutes"] + sorted(list(set(o["league_name"] for o in target_opportunities)))
+        all_positions = ["Tous", "QB", "RB", "WR", "TE"]
+        
+        with col_f1:
+            selected_league = st.selectbox("Filtrer par ligue", all_leagues, key="trade_league_filter")
+        with col_f2:
+            selected_pos = st.selectbox("Filtrer par poste ciblé", all_positions, key="trade_pos_filter")
             
-            # Au clic sur la ligne, on affiche les options
+        # Filtrage de la liste des opportunités
+        filtered_opps = target_opportunities
+        if selected_league != "Toutes":
+            filtered_opps = [o for o in filtered_opps if o["league_name"] == selected_league]
+        if selected_pos != "Tous":
+            filtered_opps = [o for o in filtered_opps if o["target_pos"] == selected_pos]
+            
+        st.write(f"**{len(filtered_opps)}** opportunité(s) affichée(s) :")
+        
+        # Affichage des opportunités
+        for idx, opp in enumerate(filtered_opps):
+            header_text = f"🎯 **{opp['target_name']}** ({opp['target_pos']}) | Ligue : *{opp['league_name']}* | Owner : **@{opp['owner_pseudo']}**"
+            
             with st.expander(header_text):
-                st.markdown("👉 **Joueur(s) du Groupe B que tu possèdes dans cette ligue :**")
-                for prop in opp["b_proposals"]:
-                    st.markdown(f"• {prop}")
+                st.markdown("👉 **Sélectionne le ou les joueurs à inclure dans ton offre :**")
+                
+                # Formulaire de sélection unique par opportunité
+                key_select = f"select_{opp['league_name']}_{opp['target_name']}_{opp['owner_pseudo']}_{idx}"
+                key_btn = f"btn_{opp['league_name']}_{opp['target_name']}_{opp['owner_pseudo']}_{idx}"
+                
+                selected_offers = st.multiselect(
+                    "Tes joueurs du Groupe B disponibles :",
+                    options=opp["b_options"],
+                    default=[],
+                    key=key_select
+                )
+                
+                if st.button("📌 Enregistrer cette proposition", key=key_btn):
+                    if selected_offers:
+                        trade_entry = {
+                            "date": datetime.now().strftime("%d/%m/%Y %H:%M"),
+                            "league": opp["league_name"],
+                            "owner": opp["owner_pseudo"],
+                            "target": f"{opp['target_name']} ({opp['target_pos']})",
+                            "offered": ", ".join(selected_offers)
+                        }
+                        st.session_state["trade_history"].append(trade_entry)
+                        st.success(f"Offre pour {opp['target_name']} enregistrée dans l'historique !")
+                    else:
+                        st.warning("Veuillez sélectionner au moins un joueur à offrir.")
+
     else:
         st.info("Aucune opportunité directe trouvée entre tes joueurs du Groupe B et les cibles du Groupe A.")
+
+    # --- HISTORIQUE DES TRADES ---
+    st.markdown("---")
+    st.subheader("📋 Historique des Propositions Enregistrées")
+    
+    if st.session_state["trade_history"]:
+        df_history = pd.DataFrame(st.session_state["trade_history"])
+        st.dataframe(
+            df_history.rename(columns={
+                "date": "Date",
+                "league": "Ligue",
+                "owner": "Adversaire",
+                "target": "Joueur Cible",
+                "offered": "Joueur(s) Offert(s)"
+            }),
+            use_container_width=True
+        )
         
+        if st.button("🗑️ Effacer l'historique"):
+            st.session_state["trade_history"] = []
+            st.rerun()
+    else:
+        st.caption("Aucune proposition enregistrée pour le moment. Sélectionne des joueurs ci-dessus pour construire tes offres.")
