@@ -6,38 +6,22 @@ from datetime import datetime
 # Configuration Streamlit pour mobile
 st.set_page_config(page_title="Sleeper Roster Manager", layout="wide")
 
-# CSS : Onglets FIXES en haut de l'écran sur mobile
-st.markdown("""
-    <style>
-    /* Fixe la barre d'onglets tout en haut sous le header Streamlit */
-    div[data-testid="stTabs"] > div[role="tablist"] {
-        position: fixed !important;
-        top: 3.2rem !important;
-        left: 0 !important;
-        right: 0 !important;
-        width: 100% !important;
-        z-index: 99999 !important;
-        background-color: #0e1117 !important;
-        padding: 0.5rem 1rem !important;
-        border-bottom: 2px solid #262730 !important;
-    }
-    
-    /* Décale le contenu des onglets pour ne pas qu'il soit caché sous la barre fixe */
-    div[data-testid="stTabs"] > div[role="tabpanel"] {
-        margin-top: 3.5rem !important;
-    }
-    </style>
-""", unsafe_allow_html=True)
-
 # Initialisation de l'historique des trades
 if "trade_history" not in st.session_state:
     st.session_state["trade_history"] = []
 
 st.title("🏈 Sleeper Roster Manager")
-st.caption("Consolide tes rosters, trie par ADP et suis tes propositions de trade.")
 
-# Sidebar pour les paramètres
-st.sidebar.header("Paramètres")
+# Sidebar : Paramètres & Navigation
+st.sidebar.header("📌 Navigation")
+page = st.sidebar.radio(
+    "Choisir un onglet :",
+    ["⭐ Groupe A (Targets)", "🔄 Groupe B (A Trader)", "🎯 Radar de Trade"],
+    index=2
+)
+
+st.sidebar.markdown("---")
+st.sidebar.header("⚙️ Paramètres")
 user_id_input = st.sidebar.text_input("ID Sleeper", value="742374956750540800")
 season_year = st.sidebar.selectbox("Saison", ["2026", "2025"], index=0)
 threshold_group_a = st.sidebar.slider("Seuil Groupe A (Parts min.)", min_value=2, max_value=5, value=3)
@@ -115,7 +99,6 @@ if not roster_data:
 
 # Extraction des paires (Nom du joueur, Ligue) actuellement "En cours"
 pending_trades = [t for t in st.session_state["trade_history"] if t["status"] == "En cours"]
-
 pending_target_pairs = set((t["target_name"], t["league"]) for t in pending_trades)
 pending_offered_pairs = set((p_name, t["league"]) for t in pending_trades for p_name in t["offered_names"])
 
@@ -143,11 +126,11 @@ exposure = df_rosters.groupby(["player_id", "player_name", "position", "team", "
 group_a = exposure[exposure["shares"] >= threshold_group_a].sort_values(by="search_rank", ascending=True)
 group_b = exposure[exposure["shares"] < threshold_group_a].sort_values(by="search_rank", ascending=True)
 
-# --- INTERFACE ---
-tab1, tab2, tab3 = st.tabs(["⭐ Groupe A (Targets)", "🔄 Groupe B (A Trader)", "🎯 Radar de Trade"])
 
-# ONGLET 1
-with tab1:
+# --- NAVIGATION PAR SIDEBAR ---
+
+# PAGE 1 : GROUPE A
+if page == "⭐ Groupe A (Targets)":
     st.subheader(f"Joueurs clés (≥ {threshold_group_a} parts) — Triés par ADP")
     col_filter_a, _ = st.columns([1, 2])
     with col_filter_a:
@@ -164,8 +147,8 @@ with tab1:
                 tag = " :gray[⏳ (Trade en cours)]" if is_pending else ""
                 st.markdown(f"• {l_name}{tag}")
 
-# ONGLET 2
-with tab2:
+# PAGE 2 : GROUPE B
+elif page == "🔄 Groupe B (A Trader)":
     st.subheader(f"Joueurs secondaires (< {threshold_group_a} parts) — Triés par ADP")
     col_filter_b, _ = st.columns([1, 2])
     with col_filter_b:
@@ -182,8 +165,8 @@ with tab2:
                 tag = " :gray[⏳ (Trade en cours)]" if is_pending else ""
                 st.markdown(f"• {l_name}{tag}")
 
-# ONGLET 3
-with tab3:
+# PAGE 3 : RADAR DE TRADE
+elif page == "🎯 Radar de Trade":
     st.subheader("💡 Opportunités de Trade Détectées")
     
     group_a_ids = set(group_a["player_id"])
