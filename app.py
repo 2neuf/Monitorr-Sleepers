@@ -64,7 +64,13 @@ def compute_all_data_and_opportunities(user_id, year, threshold_a):
     leagues = fetch_user_leagues(user_id, year)
     
     if not leagues:
-        return None, None, None, [], []
+        return None, None, None, [], [], {}
+
+    # Carte de la taille des rosters par ligue (nombre de slots configurés)
+    league_size_map = {
+        league["name"]: len(league.get("roster_positions") or [])
+        for league in leagues
+    }
 
     user_rosters = []
     for league in leagues:
@@ -80,7 +86,7 @@ def compute_all_data_and_opportunities(user_id, year, threshold_a):
                     })
                     
     if not user_rosters:
-        return None, None, None, [], []
+        return None, None, None, [], [], {}
 
     df_rosters = pd.DataFrame(user_rosters)
 
@@ -154,12 +160,12 @@ def compute_all_data_and_opportunities(user_id, year, threshold_a):
                         })
 
     target_opportunities.sort(key=lambda x: x["target_rank"])
-    return df_rosters, group_a, group_b, target_opportunities, leagues
+    return df_rosters, group_a, group_b, target_opportunities, leagues, league_size_map
 
 
 # --- CHARGEMENT ET CALCUL ---
 with st.spinner("Analyse et calcul des opportunités..."):
-    df_rosters, group_a, group_b, target_opportunities, leagues = compute_all_data_and_opportunities(
+    df_rosters, group_a, group_b, target_opportunities, leagues, league_size_map = compute_all_data_and_opportunities(
         user_id_input, season_year, threshold_group_a
     )
 
@@ -218,7 +224,14 @@ with tab3:
 
     if target_opportunities:
         col_f1, col_f2 = st.columns(2)
-        all_leagues = ["Toutes"] + sorted(list(set(o["league_name"] for o in target_opportunities)))
+        
+        # Tri des ligues par taille de roster décroissante (-taille), puis alphabétique
+        raw_leagues = list(set(o["league_name"] for o in target_opportunities))
+        sorted_leagues = sorted(
+            raw_leagues,
+            key=lambda name: (-league_size_map.get(name, 0), name)
+        )
+        all_leagues = ["Toutes"] + sorted_leagues
         all_positions = ["Tous", "QB", "RB", "WR", "TE"]
 
         with col_f1:
