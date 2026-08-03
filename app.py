@@ -11,16 +11,9 @@ if "trade_history" not in st.session_state:
     st.session_state["trade_history"] = []
 
 st.title("🏈 Sleeper Roster Manager")
+st.caption("Consolide tes rosters, trie par ADP et suis tes propositions de trade.")
 
-# Sidebar : Navigation & Paramètres
-st.sidebar.header("📌 Navigation")
-page = st.sidebar.radio(
-    "Choisir un onglet :",
-    ["⭐ Groupe A (Targets)", "🔄 Groupe B (A Trader)", "🎯 Radar de Trade"],
-    index=2
-)
-
-st.sidebar.markdown("---")
+# Sidebar pour les paramètres uniquement
 st.sidebar.header("⚙️ Paramètres")
 user_id_input = st.sidebar.text_input("ID Sleeper", value="742374956750540800")
 season_year = st.sidebar.selectbox("Saison", ["2026", "2025"], index=0)
@@ -64,7 +57,7 @@ def fetch_user_leagues(user_id, year):
     except:
         return []
 
-# --- CALCUL GLOBAL EN CACHE (EXÉCUTÉ 1 SEULE FOIS) ---
+# --- CALCUL GLOBAL EN CACHE ---
 @st.cache_data(ttl=600)
 def compute_all_data_and_opportunities(user_id, year, threshold_a):
     all_players = load_sleeper_players()
@@ -164,7 +157,7 @@ def compute_all_data_and_opportunities(user_id, year, threshold_a):
     return df_rosters, group_a, group_b, target_opportunities, leagues
 
 
-# --- CHARGEMENT DES DONNÉES (EN CACHE) ---
+# --- CHARGEMENT ET CALCUL ---
 with st.spinner("Analyse et calcul des opportunités..."):
     df_rosters, group_a, group_b, target_opportunities, leagues = compute_all_data_and_opportunities(
         user_id_input, season_year, threshold_group_a
@@ -180,9 +173,11 @@ pending_target_pairs = set((t["target_name"], t["league"]) for t in pending_trad
 pending_offered_pairs = set((p_name, t["league"]) for t in pending_trades for p_name in t["offered_names"])
 
 
-# --- AFFICHAGE INTERFACE ---
+# --- NAVIGATION PAR ONGLETS EN HAUT DE PAGE ---
+tab1, tab2, tab3 = st.tabs(["⭐ Groupe A (Targets)", "🔄 Groupe B (A Trader)", "🎯 Radar de Trade"])
 
-if page == "⭐ Groupe A (Targets)":
+# ONGLET 1 : GROUPE A
+with tab1:
     st.subheader(f"Joueurs clés (≥ {threshold_group_a} parts) — Triés par ADP")
     col_filter_a, _ = st.columns([1, 2])
     with col_filter_a:
@@ -199,7 +194,8 @@ if page == "⭐ Groupe A (Targets)":
                 tag = " :gray[⏳ (Trade en cours)]" if is_pending else ""
                 st.markdown(f"• {l_name}{tag}")
 
-elif page == "🔄 Groupe B (A Trader)":
+# ONGLET 2 : GROUPE B
+with tab2:
     st.subheader(f"Joueurs secondaires (< {threshold_group_a} parts) — Triés par ADP")
     col_filter_b, _ = st.columns([1, 2])
     with col_filter_b:
@@ -216,7 +212,8 @@ elif page == "🔄 Groupe B (A Trader)":
                 tag = " :gray[⏳ (Trade en cours)]" if is_pending else ""
                 st.markdown(f"• {l_name}{tag}")
 
-elif page == "🎯 Radar de Trade":
+# ONGLET 3 : RADAR DE TRADE
+with tab3:
     st.subheader("💡 Opportunités de Trade Détectées")
 
     if target_opportunities:
