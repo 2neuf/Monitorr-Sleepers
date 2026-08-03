@@ -19,7 +19,7 @@ user_id_input = st.sidebar.text_input("ID Sleeper", value="742374956750540800")
 season_year = st.sidebar.selectbox("Saison", ["2026", "2025"], index=0)
 threshold_group_a = st.sidebar.slider("Seuil Groupe A (Parts min.)", min_value=2, max_value=5, value=3)
 
-# Callback pour enregistrer et réinitialiser le multiselect sans erreur
+# Callback pour enregistrer et réinitialiser le multiselect proprement
 def save_trade_callback(select_key, trade_entry):
     st.session_state["trade_history"].append(trade_entry)
     st.session_state[select_key] = []
@@ -90,10 +90,11 @@ if not roster_data:
     st.warning("Aucun roster trouvé pour cet utilisateur/saison.")
     st.stop()
 
-# Extraction des noms engagés dans des trades "En cours"
+# Extraction des paires (Nom du joueur, Ligue) actuellement "En cours"
 pending_trades = [t for t in st.session_state["trade_history"] if t["status"] == "En cours"]
-pending_targets = set(t["target_name"] for t in pending_trades)
-pending_offered = set(p_name for t in pending_trades for p_name in t["offered_names"])
+
+pending_target_pairs = set((t["target_name"], t["league"]) for t in pending_trades)
+pending_offered_pairs = set((p_name, t["league"]) for t in pending_trades for p_name in t["offered_names"])
 
 # Transformation des données
 df_rosters = pd.DataFrame(roster_data)
@@ -119,13 +120,6 @@ exposure = df_rosters.groupby(["player_id", "player_name", "position", "team", "
 group_a = exposure[exposure["shares"] >= threshold_group_a].sort_values(by="search_rank", ascending=True)
 group_b = exposure[exposure["shares"] < threshold_group_a].sort_values(by="search_rank", ascending=True)
 
-def format_player_label(name, pos, team, rank):
-    is_pending = (name in pending_targets) or (name in pending_offered)
-    rank_str = f"Rank #{rank}" if rank < 9000 else "Non classé"
-    if is_pending:
-        return f":gray[[{pos}] {name} ({team}) — {rank_str} ⏳ Trade en cours]"
-    return f"**[{pos}] {name}** ({team}) — *{rank_str}*"
-
 # --- INTERFACE ---
 tab1, tab2, tab3 = st.tabs(["⭐ Groupe A (Targets)", "🔄 Groupe B (A Trader)", "🎯 Radar de Trade"])
 
@@ -140,10 +134,12 @@ with tab1:
     st.write(f"Total : **{len(filtered_a)}** joueurs")
     
     for _, row in filtered_a.iterrows():
-        label = format_player_label(row['player_name'], row['position'], row['team'], row['search_rank'])
-        with st.expander(f"{label} — **{row['shares']} parts**"):
+        rank_str = f"Rank #{row['search_rank']}" if row['search_rank'] < 9000 else "Non classé"
+        with st.expander(f"**[{row['position']}] {row['player_name']}** ({row['team']}) — *{rank_str}* — **{row['shares']} parts**"):
             for l_name in row["leagues"]:
-                st.write(f"• {l_name}")
+                is_pending = (row['player_name'], l_name) in pending_target_pairs or (row['player_name'], l_name) in pending_offered_pairs
+                tag = " :gray[⏳ (Trade en cours)]" if is_pending else ""
+                st.markdown(f"• {l_name}{tag}")
 
 # ONGLET 2
 with tab2:
@@ -156,10 +152,12 @@ with tab2:
     st.write(f"Total : **{len(filtered_b)}** joueurs")
     
     for _, row in filtered_b.iterrows():
-        label = format_player_label(row['player_name'], row['position'], row['team'], row['search_rank'])
-        with st.expander(f"{label} — **{row['shares']} part(s)**"):
+        rank_str = f"Rank #{row['search_rank']}" if row['search_rank'] < 9000 else "Non classé"
+        with st.expander(f"**[{row['position']}] {row['player_name']}** ({row['team']}) — *{rank_str}* — **{row['shares']} part(s)**"):
             for l_name in row["leagues"]:
-                st.write(f"• {l_name}")
+                is_pending = (row['player_name'], l_name) in pending_target_pairs or (row['player_name'], l_name) in pending_offered_pairs
+                tag = " :gray[⏳ (Trade en cours)]" if is_pending else ""
+                st.markdown(f"• {l_name}{tag}")
 
 # ONGLET 3
 with tab3:
@@ -235,14 +233,52 @@ with tab3:
         st.write(f"**{len(filtered_opps)}** opportunité(s) affichée(s) :")
         
         for idx, opp in enumerate(filtered_opps):
-            is_target_pending = opp["target_name"] in pending_targets
+            # Le tag 'Trade en cours' est STRICTEMENT vérifié sur (Cible + Ligue)
+            is_target_pending = (opp["target_name"], opp["league_name"]) in pending_target_pairs
             status_tag = " ⏳ [Trade en cours]" if is_target_pending else ""
             rank_str = f"Rank #{opp['target_rank']}" if opp['target_rank'] < 9000 else "Unranked"
             
             header_text = f"🎯 **{opp['target_name']}** ({opp['target_pos']}) - *{rank_str}* | Ligue : *{opp['league_name']}* | Owner : **@{opp['owner_pseudo']}**{status_tag}"
             
             with st.expander(header_text):
-                st.markdown("👉 **Sélectionne le ou les joueurs à inclure dans ton offre :**")
+                # --- HISTORIQUE SPÉCIFIQUE À CE TRADE ---
+                matching_trades = [
+                    (real_idx, trade) for real_idx, trade in enumerate(st.session_state["trade_history"])
+                    if trade["league"] == opp["league_name"] 
+                    and trade["target_name"] == opp["target_name"] 
+                    and trade["owner"] == opp["owner_pseudo"]
+                ]
+                
+                if matching_trades:
+                    st.markdown("📋 **Propositions enregistrées pour ce trade :**")
+                    for real_idx, trade in matching_trades:
+                        col_status, col_details = st.columns([1, 2])
+                        with col_status:
+                            current_status = trade["status"]
+                            new_status = st.selectbox(
+                                "Statut",
+                                ["En cours", "Accepté", "Refusé"],
+                                index=["En cours", "Accepté", "Refusé"].index(current_status),
+                                key=f"status_select_{trade['id']}"
+                            )
+                            if new_status == "Accepté":
+                                st.session_state["trade_history"].pop(real_idx)
+                                st.toast("Trade accepté ! Supprimé de l'historique.", icon="✅")
+                                st.rerun()
+                            elif new_status != current_status:
+                                st.session_state["trade_history"][real_idx]["status"] = new_status
+                                st.rerun()
+
+                        with col_details:
+                            st.caption(f"Créé le {trade['date']}")
+                            if trade["status"] == "Refusé":
+                                st.markdown(f"❌ **Proposé(s) :** :red[{trade['offered_full']}]")
+                            else:
+                                st.markdown(f"🤝 **Proposé(s) :** {trade['offered_full']}")
+                    st.divider()
+
+                # --- NOUVELLE PROPOSITION ---
+                st.markdown("👉 **Nouvelle proposition pour cette cible :**")
                 
                 key_select = f"select_{opp['league_name']}_{opp['target_name']}_{opp['owner_pseudo']}_{idx}"
                 key_btn = f"btn_{opp['league_name']}_{opp['target_name']}_{opp['owner_pseudo']}_{idx}"
@@ -253,7 +289,6 @@ with tab3:
                     key=key_select
                 )
                 
-                # Préparation de l'entrée de trade
                 if selected_offers:
                     raw_names = [opp["b_names_map"][opt] for opt in selected_offers]
                     trade_entry = {
@@ -276,49 +311,12 @@ with tab3:
                 else:
                     st.button("📌 Enregistrer cette proposition", key=key_btn, disabled=True)
 
+        # Nettoyage global facultatif
+        if st.session_state["trade_history"]:
+            st.markdown("---")
+            if st.button("🗑️ Effacer l'ensemble de l'historique"):
+                st.session_state["trade_history"] = []
+                st.rerun()
+
     else:
         st.info("Aucune opportunité directe trouvée.")
-
-    # HISTORIQUE
-    st.markdown("---")
-    st.subheader("📋 Historique des Propositions")
-    
-    if st.session_state["trade_history"]:
-        for idx_trade, trade in enumerate(reversed(st.session_state["trade_history"])):
-            real_idx = len(st.session_state["trade_history"]) - 1 - idx_trade
-            
-            col_status, col_details = st.columns([1, 3])
-            
-            with col_status:
-                current_status = trade["status"]
-                new_status = st.selectbox(
-                    "Statut",
-                    ["En cours", "Accepté", "Refusé"],
-                    index=["En cours", "Accepté", "Refusé"].index(current_status),
-                    key=f"status_select_{trade['id']}"
-                )
-                
-                if new_status == "Accepté":
-                    st.session_state["trade_history"].pop(real_idx)
-                    st.toast("Trade accepté ! Supprimé de l'historique.", icon="✅")
-                    st.rerun()
-                elif new_status != current_status:
-                    st.session_state["trade_history"][real_idx]["status"] = new_status
-                    st.rerun()
-
-            with col_details:
-                st.markdown(f"**Ligue :** {trade['league']} | **Adversaire :** @{trade['owner']} | **Date :** {trade['date']}")
-                st.markdown(f"🎯 **Cible :** {trade['target_full']}")
-                
-                if trade["status"] == "Refusé":
-                    st.markdown(f"❌ **Proposé(s) :** :red[{trade['offered_full']}]")
-                else:
-                    st.markdown(f"🤝 **Proposé(s) :** {trade['offered_full']}")
-            
-            st.divider()
-
-        if st.button("🗑️ Tout effacer l'historique"):
-            st.session_state["trade_history"] = []
-            st.rerun()
-    else:
-        st.caption("Aucune proposition enregistrée pour le moment.")
