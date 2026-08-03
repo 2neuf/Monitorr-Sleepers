@@ -6,6 +6,22 @@ from datetime import datetime
 # Configuration Streamlit pour mobile
 st.set_page_config(page_title="Sleeper Roster Manager", layout="wide")
 
+# CSS pour rendre les onglets flottants/collants (Sticky Tabs) en haut lors du scroll
+st.markdown("""
+    <style>
+    /* Fixe la barre d'onglets en haut de l'écran */
+    div[data-testid="stTabs"] > div[role="tablist"] {
+        position: sticky;
+        top: 2.8rem;
+        background-color: var(--background-color, #0e1117);
+        z-index: 999;
+        padding-top: 0.5rem;
+        padding-bottom: 0.5rem;
+        border-bottom: 1px solid rgba(250, 250, 250, 0.1);
+    }
+    </style>
+""", unsafe_allow_html=True)
+
 # Initialisation de l'historique des trades
 if "trade_history" not in st.session_state:
     st.session_state["trade_history"] = []
@@ -233,7 +249,6 @@ with tab3:
         st.write(f"**{len(filtered_opps)}** opportunité(s) affichée(s) :")
         
         for idx, opp in enumerate(filtered_opps):
-            # Le tag 'Trade en cours' est STRICTEMENT vérifié sur (Cible + Ligue)
             is_target_pending = (opp["target_name"], opp["league_name"]) in pending_target_pairs
             status_tag = " ⏳ [Trade en cours]" if is_target_pending else ""
             rank_str = f"Rank #{opp['target_rank']}" if opp['target_rank'] < 9000 else "Unranked"
@@ -241,7 +256,7 @@ with tab3:
             header_text = f"🎯 **{opp['target_name']}** ({opp['target_pos']}) - *{rank_str}* | Ligue : *{opp['league_name']}* | Owner : **@{opp['owner_pseudo']}**{status_tag}"
             
             with st.expander(header_text):
-                # --- HISTORIQUE SPÉCIFIQUE À CE TRADE ---
+                # HISTORIQUE SPÉCIFIQUE
                 matching_trades = [
                     (real_idx, trade) for real_idx, trade in enumerate(st.session_state["trade_history"])
                     if trade["league"] == opp["league_name"] 
@@ -277,7 +292,7 @@ with tab3:
                                 st.markdown(f"🤝 **Proposé(s) :** {trade['offered_full']}")
                     st.divider()
 
-                # --- NOUVELLE PROPOSITION ---
+                # NOUVELLE PROPOSITION
                 st.markdown("👉 **Nouvelle proposition pour cette cible :**")
                 
                 key_select = f"select_{opp['league_name']}_{opp['target_name']}_{opp['owner_pseudo']}_{idx}"
@@ -311,7 +326,6 @@ with tab3:
                 else:
                     st.button("📌 Enregistrer cette proposition", key=key_btn, disabled=True)
 
-        # Nettoyage global facultatif
         if st.session_state["trade_history"]:
             st.markdown("---")
             if st.button("🗑️ Effacer l'ensemble de l'historique"):
