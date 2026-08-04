@@ -111,7 +111,6 @@ def delete_all_trades_db():
     conn.commit()
     conn.close()
 
-
 # Initialisation de l'historique en session à partir de la base de données
 if "trade_history" not in st.session_state:
     st.session_state["trade_history"] = load_trades_from_db()
@@ -119,7 +118,6 @@ if "trade_history" not in st.session_state:
 st.title("🏈 Sleeper Roster Manager")
 st.caption("Consolide tes rosters, trie par ADP et suis tes propositions de trade.")
 
-# Callback pour enregistrer en BD et réinitialiser le champ
 def save_trade_callback(select_key, trade_entry):
     st.session_state["trade_history"].append(trade_entry)
     save_trade_to_db(trade_entry)
@@ -198,7 +196,6 @@ def fetch_league_draft_info(league_id):
     except:
         return {}, set()
 
-# --- CALCUL LOGARITHMIQUE DE LA VALEUR D'UN PICK ---
 def calculate_pick_rank_and_label(season, rd, orig_id, my_roster_id, roster_to_slot, total_teams, orig_pseudo, current_year):
     slot = roster_to_slot.get(orig_id) if season == str(current_year) else None
     
@@ -227,7 +224,6 @@ def calculate_pick_rank_and_label(season, rd, orig_id, my_roster_id, roster_to_s
         
     return rank_val, label, pick_name
 
-# --- CALCUL GLOBAL EN CACHE ---
 @st.cache_data(ttl=600)
 def compute_all_data_and_opportunities(user_id, year, threshold_a, accepted_trades_tuple=()):
     all_players = load_sleeper_players()
@@ -264,7 +260,6 @@ def compute_all_data_and_opportunities(user_id, year, threshold_a, accepted_trad
                         "league_name": league["name"]
                     })
 
-    # Mise à jour avec les trades acceptés
     traded_away_picks = set()
 
     for trade_league, target_id, target_name, offered_names in accepted_trades_tuple:
@@ -442,7 +437,6 @@ if df_rosters is None:
     st.warning("Aucun roster trouvé pour cet utilisateur/saison.")
     st.stop()
 
-# Exclusion automatique basée sur la limite d'ADP des joueurs Groupe B
 valid_b_players = group_b[group_b["search_rank"] <= rank_threshold_b]
 
 leagues_with_valid_b = set()
@@ -462,7 +456,6 @@ excluded_leagues_input = st.sidebar.multiselect(
 pending_trades = [t for t in st.session_state["trade_history"] if t["status"] == "En cours"]
 pending_target_pairs = set((t["target_name"], t["league"]) for t in pending_trades)
 pending_offered_pairs = set((p_name, t["league"]) for t in pending_trades for p_name in t["offered_names"])
-
 
 # --- NAVIGATION PAR ONGLETS EN HAUT DE PAGE ---
 tab1, tab2, tab3 = st.tabs(["⭐ Groupe A (Targets)", "🔄 Groupe B (A Trader)", "🎯 Radar de Trade"])
@@ -620,3 +613,4 @@ with tab3:
 
     else:
         st.info("Aucune opportunité directe trouvée.")
+
