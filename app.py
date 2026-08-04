@@ -1,430 +1,245 @@
+import streamlit as st
+import requests
+import sqlite3
+import pandas as pd
+import numpy as np
 import math
 from datetime import datetime
-import pandas as pd
-import requests
-import streamlit as st
 
-st.set_page_config(page_title="Sleeper Roster Manager", layout="wide")
-
-
-# --- FONCTION CALCULATEUR DE VALEUR (ADP -> PTS) ---
-def get_asset_value(rank):
-    if not rank or rank >= 9000:
-        return 100
-    val = round(10000 * math.exp(-0.018 * (rank - 1)))
-    return max(50, val)
-
-
-# --- BDD TURSO & SQLITE LOCAL ---
-
-
-def execute_turso_query(statements):
-    turso_url = st.secrets.get("TURSO_DATABASE_URL", "")
-    turso_token = st.secrets.get("TURSO_AUTH_TOKEN", "")
-    if not turso_url or not turso_token:
-        return None
-    http_url = turso_url.replace("libsql://", "https://")
-    pipeline_url = f"{http_url}/v2/pipeline"
-    headers = {
-        "Authorization": f"Bearer {turso_token}",
-        "Content-Type": "application/json",
-    }
-
-    requests_payload = []
-    for stmt in statements:
-        sql = stmt[0]
-        args = stmt[1] if len(stmt) > 1 else []
-        formatted_args = []
-        for arg in args:
-            if arg is None:
-                formatted_args.append({"type": "null"})
-            elif isinstance(arg, int):
-                formatted_args.append({"type": "integer", "value": str(arg)})
-            elif isinstance(arg, float):
-                formatted_args.append({"type": "float", "value": arg})
-            else:
-                formatted_args.append({"type": "text", "value": str(arg)})
-        requests_payload.append(
-            {"type": "execute", "stmt": {"sql": sql, "args": formatted_args}}
-        )
-
-    try:
-        res = requests.post(
-            pipeline_url,
-            json={"requests": requests_payload},
-            headers=headers,
-            timeout=5,
-        )
-        if res.status_code == 200:
-            return res.json()
-    except Exception:
-        pass
-    return None
-
-
-def init_db():
-    queries = [
-        (
-            """CREATE TABLE IF NOT EXISTS trade_history (
-            id TEXT PRIMARY KEY, date TEXT, status TEXT, league TEXT, owner TEXT,
-            target_id TEXT, target_name TEXT, target_full TEXT, offered_full TEXT, offered_names TEXT, value_metrics TEXT
-        )""",
-            (),
-        ),
-        (
-            """CREATE TABLE IF NOT EXISTS blacklist (
-            id TEXT PRIMARY KEY, type TEXT, owner TEXT, target_name TEXT, league TEXT
-        )""",
-            (),
-        ),
-    ]
-    res = execute_turso_query(queries)
-    if res is None:
-        import sqlite3
-
-        conn = sqlite3.connect("trade_history.db")
-        conn.execute("""CREATE TABLE IF NOT EXISTS trade_history (
-            id TEXT PRIMARY KEY, date TEXT, status TEXT, league TEXT, owner TEXT,
-            target_id TEXT, target_name TEXT, target_full TEXT, offered_full TEXT, offered_names TEXT, value_metrics TEXT
-        )""")
-        conn.execute("""CREATE TABLE IF NOT EXISTS blacklist (
-            id TEXT PRIMARY KEY, type TEXT, owner TEXT, target_name TEXT, league TEXT
-        )""")
-        conn.commit()
-        conn.close()
-
-
-def load_trades_from_db():
-    init_db()
-    res = execute_turso_query([(
-        "SELECT id, date, status, league, owner, target_id, target_name,"
-        " target_full, offered_full, offered_names, value_metrics FROM"
-        " trade_history",
-        (),
-    )])
-    trades = []
-    if res and "results" in res and res["results"]:
-        result_exec = res["results"][0]
-        if result_exec.get("type") == "ok":
-            for r in result_exec.get("response", {}).get("result", {}).get(
-                "rows", []
-            ):
-                trades.append({
-                    "id": r[0]["value"],
-                    "date": r[1]["value"],
-                    "status": r[2]["value"],
-                    "league": r[3]["value"],
-                    "owner": r[4]["value"],
-                    "target_id": (
-                        r[5]["value"] if r[5]["type"] != "null" else ""
-                    ),
-                    "target_name": r[6]["value"],
-                    "target_full": r[7]["value"],
-                    "offered_full": r[8]["value"],
-                    "offered_names": (
-                        r[9]["value"].split(";") if r[9]["value"] else []
-                    ),
-                    "value_metrics": (
-                        r[10]["value"]
-                        if len(r) > 10 and r[10]["type"] != "null"
-                        else ""
-                    ),
-                })
-            return trades
-    try:
-        import sqlite3
-
-        conn = sqlite3.connect("trade_history.db")
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT id, date, status, league, owner, target_id, target_name,"
-            " target_full, offered_full, offered_names, value_metrics FROM"
-            " trade_history"
-        )
-        for r in cursor.fetchall():
-            trades.append({
-                "id": r[0],
-                "date": r[1],
-                "status": r[2],
-                "league": r[3],
-                "owner": r[4],
-                "target_id": r[5],
-                "target_name": r[6],
-                "target_full": r[7],
-                "offered_full": r[8],
-                "offered_names": r[9].split(";") if r[9] else [],
-                "value_metrics": r[10] if len(r) > 10 and r[10] else "",
-            })
-        conn.close()
-    except Exception:
-        pass
-    return trades
-
-
-def load_blacklist_from_db():
-    init_db()
-    res = execute_turso_query(
-        [("SELECT id, type, owner, target_name, league FROM blacklist", ())]
-    )
-    blacklisted_owners = set()
-    blacklisted_targets = set()
-
-    if res and "results" in res and res["results"]:
-        result_exec = res["results"][0]
-        if result_exec.get("type") == "ok":
-            for r in result_exec.get("response", {}).get("result", {}).get(
-                "rows", []
-            ):
-                b_type = r[1]["value"]
-                if b_type == "owner":
-                    blacklisted_owners.add(r[2]["value"])
-                else:
-                    blacklisted_targets.add(
-                        (r[3]["value"], r[4]["value"], r[2]["value"])
-                    )
-            return blacklisted_owners, blacklisted_targets
-
-    try:
-        import sqlite3
-
-        conn = sqlite3.connect("trade_history.db")
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, type, owner, target_name, league FROM blacklist")
-        for r in cursor.fetchall():
-            if r[1] == "owner":
-                blacklisted_owners.add(r[2])
-            else:
-                blacklisted_targets.add((r[3], r[4], r[2]))
-        conn.close()
-    except Exception:
-        pass
-    return blacklisted_owners, blacklisted_targets
-
-
-def add_to_blacklist_db(b_id, b_type, owner, target_name="", league=""):
-    init_db()
-    sql = (
-        "INSERT OR REPLACE INTO blacklist (id, type, owner, target_name,"
-        " league) VALUES (?, ?, ?, ?, ?)"
-    )
-    args = (b_id, b_type, owner, target_name, league)
-    if execute_turso_query([(sql, args)]) is None:
-        import sqlite3
-
-        conn = sqlite3.connect("trade_history.db")
-        conn.execute(sql, args)
-        conn.commit()
-        conn.close()
-
-
-def remove_from_blacklist_db(b_id):
-    init_db()
-    sql = "DELETE FROM blacklist WHERE id = ?"
-    if execute_turso_query([(sql, (b_id,))]) is None:
-        import sqlite3
-
-        conn = sqlite3.connect("trade_history.db")
-        conn.execute(sql, (b_id,))
-        conn.commit()
-        conn.close()
-
-
-def save_trade_to_db(trade):
-    init_db()
-    sql = (
-        "INSERT OR REPLACE INTO trade_history (id, date, status, league, owner,"
-        " target_id, target_name, target_full, offered_full, offered_names,"
-        " value_metrics) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-    )
-    args = (
-        trade["id"],
-        trade["date"],
-        trade["status"],
-        trade["league"],
-        trade["owner"],
-        str(trade.get("target_id", "")),
-        trade["target_name"],
-        trade["target_full"],
-        trade["offered_full"],
-        ";".join(trade["offered_names"]),
-        trade.get("value_metrics", ""),
-    )
-    if execute_turso_query([(sql, args)]) is None:
-        import sqlite3
-
-        conn = sqlite3.connect("trade_history.db")
-        conn.execute(sql, args)
-        conn.commit()
-        conn.close()
-
-
-def update_trade_status_in_db(trade_id, status):
-    init_db()
-    sql = "UPDATE trade_history SET status = ? WHERE id = ?"
-    if execute_turso_query([(sql, (status, trade_id))]) is None:
-        import sqlite3
-
-        conn = sqlite3.connect("trade_history.db")
-        conn.execute(sql, (status, trade_id))
-        conn.commit()
-        conn.close()
-
-
-def delete_all_trades_db():
-    init_db()
-    if execute_turso_query([("DELETE FROM trade_history", ())]) is None:
-        import sqlite3
-
-        conn = sqlite3.connect("trade_history.db")
-        conn.execute("DELETE FROM trade_history")
-        conn.commit()
-        conn.close()
-
-
-if "trade_history" not in st.session_state:
-    st.session_state["trade_history"] = load_trades_from_db()
-
-if (
-    "blacklisted_owners" not in st.session_state
-    or "blacklisted_targets" not in st.session_state
-):
-    bo, bt = load_blacklist_from_db()
-    st.session_state["blacklisted_owners"] = bo
-    st.session_state["blacklisted_targets"] = bt
-
-st.title("🏈 Sleeper Roster Manager")
-st.caption(
-    "Consolide tes rosters, trie par ADP et suis tes propositions de trade."
+# --- CONFIGURATION STREAMLIT ---
+st.set_page_config(
+    page_title="Empire Trade Radar",
+    page_icon="🏈",
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
 
+# --- BASE DE DONNÉES TURSO / SQLITE ---
+TURSO_DATABASE_URL = st.secrets.get("TURSO_DATABASE_URL", "sqlite.db")
+TURSO_AUTH_TOKEN = st.secrets.get("TURSO_AUTH_TOKEN", "")
 
-def save_trade_callback(select_key, trade_entry):
-    st.session_state["trade_history"].append(trade_entry)
-    save_trade_to_db(trade_entry)
-    st.session_state[select_key] = []
+def get_db_connection():
+    """Établit la connexion avec Turso/SQLite local."""
+    conn = sqlite3.connect("local_trade_radar.db")
+    return conn
 
+def init_db():
+    """Initialise les tables de persistance."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS trade_history (
+            id TEXT PRIMARY KEY,
+            date TEXT,
+            status TEXT,
+            league TEXT,
+            owner TEXT,
+            target_id TEXT,
+            target_name TEXT,
+            target_full TEXT,
+            offered_full TEXT,
+            offered_names TEXT,
+            value_metrics TEXT
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS blacklist (
+            id TEXT PRIMARY KEY,
+            type TEXT,
+            owner TEXT,
+            target_name TEXT,
+            league TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
 
-# --- API SLEEPER ---
+init_db()
 
+def load_persisted_state():
+    """Charge l'historique et les blacklists depuis la DB."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT * FROM trade_history")
+    trades = []
+    for row in cursor.fetchall():
+        trades.append({
+            "id": row[0],
+            "date": row[1],
+            "status": row[2],
+            "league": row[3],
+            "owner": row[4],
+            "target_id": row[5],
+            "target_name": row[6],
+            "target_full": row[7],
+            "offered_full": row[8],
+            "offered_names": row[9].split(";;") if row[9] else [],
+            "value_metrics": row[10]
+        })
 
+    cursor.execute("SELECT * FROM blacklist")
+    blacklisted_owners = set()
+    blacklisted_targets = set()
+    for row in cursor.fetchall():
+        if row[1] == "owner":
+            blacklisted_owners.add(row[2])
+        elif row[1] == "target":
+            blacklisted_targets.add((row[3], row[4], row[2]))
+
+    conn.close()
+    return trades, blacklisted_owners, blacklisted_targets
+
+if "trade_history" not in st.session_state:
+    t_hist, b_owners, b_targets = load_persisted_state()
+    st.session_state["trade_history"] = t_hist
+    st.session_state["blacklisted_owners"] = b_owners
+    st.session_state["blacklisted_targets"] = b_targets
+
+def add_trade_to_db(trade):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    offered_str = ";;".join(trade.get("offered_names", []))
+    cursor.execute("""
+        INSERT OR REPLACE INTO trade_history 
+        (id, date, status, league, owner, target_id, target_name, target_full, offered_full, offered_names, value_metrics)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        trade["id"], trade["date"], trade["status"], trade["league"], trade["owner"],
+        trade.get("target_id", ""), trade["target_name"], trade["target_full"],
+        trade["offered_full"], offered_str, trade.get("value_metrics", "")
+    ))
+    conn.commit()
+    conn.close()
+
+def update_trade_status_in_db(trade_id, status):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE trade_history SET status = ? WHERE id = ?", (status, trade_id))
+    conn.commit()
+    conn.close()
+
+def delete_all_trades_db():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM trade_history")
+    conn.commit()
+    conn.close()
+
+def add_to_blacklist_db(item_id, item_type, owner, target_name="", league=""):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT OR REPLACE INTO blacklist (id, type, owner, target_name, league)
+        VALUES (?, ?, ?, ?, ?)
+    """, (item_id, item_type, owner, target_name, league))
+    conn.commit()
+    conn.close()
+
+def remove_from_blacklist_db(item_id):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM blacklist WHERE id = ?", (item_id,))
+    conn.commit()
+    conn.close()
+
+# --- APPELS API SLEEPER & VALORISATION ---
 @st.cache_data(ttl=86400)
 def load_sleeper_players():
-    res = requests.get("https://api.sleeper.app/v1/players/nfl")
+    url = "https://api.sleeper.app/v1/players/nfl"
+    res = requests.get(url)
     return res.json() if res.status_code == 200 else {}
 
+@st.cache_data(ttl=3600)
+def fetch_user_leagues(user_id, year):
+    url = f"https://api.sleeper.app/v1/user/{user_id}/leagues/nfl/{year}"
+    res = requests.get(url)
+    return res.json() if res.status_code == 200 else []
+
+@st.cache_data(ttl=3600)
+def fetch_league_rosters(league_id):
+    url = f"https://api.sleeper.app/v1/league/{league_id}/rosters"
+    res = requests.get(url)
+    return res.json() if res.status_code == 200 else []
 
 @st.cache_data(ttl=3600)
 def fetch_league_users(league_id):
-    try:
-        res = requests.get(
-            f"https://api.sleeper.app/v1/league/{league_id}/users"
-        ).json()
-        return {
-            u["user_id"]: u.get("display_name") or u.get("username") or "Anonyme"
-            for u in res
-        }
-    except Exception:
-        return {}
+    url = f"https://api.sleeper.app/v1/league/{league_id}/users"
+    res = requests.get(url)
+    if res.status_code == 200:
+        return {u["user_id"]: u.get("display_name", u.get("username", "Inconnu")) for u in res.json()}
+    return {}
 
-
-@st.cache_data(ttl=600)
-def fetch_league_rosters(league_id):
-    try:
-        return requests.get(
-            f"https://api.sleeper.app/v1/league/{league_id}/rosters"
-        ).json()
-    except Exception:
-        return []
-
-
-@st.cache_data(ttl=600)
-def fetch_user_leagues(user_id, year):
-    try:
-        return requests.get(
-            f"https://api.sleeper.app/v1/user/{user_id}/leagues/nfl/{year}"
-        ).json()
-    except Exception:
-        return []
-
-
-@st.cache_data(ttl=600)
-def fetch_league_traded_picks(league_id):
-    try:
-        return requests.get(
-            f"https://api.sleeper.app/v1/league/{league_id}/traded_picks"
-        ).json()
-    except Exception:
-        return []
-
-
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=3600)
 def fetch_league_draft_info(league_id):
-    try:
-        drafts = requests.get(
-            f"https://api.sleeper.app/v1/league/{league_id}/drafts"
-        ).json()
-        if not drafts:
-            return {}, set()
-        completed_seasons = set()
-        roster_to_slot = {}
+    url = f"https://api.sleeper.app/v1/league/{league_id}/drafts"
+    res = requests.get(url)
+    roster_to_slot = {}
+    completed_seasons = set()
+    if res.status_code == 200:
+        drafts = res.json()
         for d in drafts:
-            d_season = str(d.get("season"))
             if d.get("status") == "complete":
-                completed_seasons.add(d_season)
-            else:
-                draft_id = d.get("draft_id")
-                if draft_id:
-                    try:
-                        d_res = requests.get(
-                            f"https://api.sleeper.app/v1/draft/{draft_id}"
-                        ).json()
-                        slot_to_roster = d_res.get("slot_to_roster_id") or {}
-                        for slot_str, roster_id in slot_to_roster.items():
-                            roster_to_slot[int(roster_id)] = int(slot_str)
-                    except Exception:
-                        pass
-        return roster_to_slot, completed_seasons
-    except Exception:
-        return {}, set()
+                completed_seasons.add(str(d.get("season")))
+            draft_id = d.get("draft_id")
+            if draft_id:
+                picks_res = requests.get(f"https://api.sleeper.app/v1/draft/{draft_id}/picks")
+                if picks_res.status_code == 200:
+                    for p in picks_res.json():
+                        if p.get("round") == 1:
+                            roster_to_slot[p.get("roster_id")] = p.get("draft_slot")
+    return roster_to_slot, completed_seasons
 
+@st.cache_data(ttl=3600)
+def fetch_league_traded_picks(league_id):
+    url = f"https://api.sleeper.app/v1/league/{league_id}/traded_picks"
+    res = requests.get(url)
+    return res.json() if res.status_code == 200 else []
 
-def calculate_pick_rank_and_label(
-    season,
-    rd,
-    orig_id,
-    my_roster_id,
-    roster_to_slot,
-    total_teams,
-    orig_pseudo,
-    current_year,
-):
-    slot = roster_to_slot.get(orig_id) if season == str(current_year) else None
-    if slot is not None:
-        pos_in_round = slot
-        slot_str = f"{rd}.{slot:02d}" if slot < 10 else f"{rd}.{slot}"
+def get_asset_value(rank):
+    """Calcul exponentiel de la valeur de trade basée sur le rang ADP."""
+    if not rank or rank >= 9000:
+        return 100
+    val = 10000 * math.exp(-0.018 * (rank - 1))
+    return max(int(val), 50)
+
+def calculate_pick_rank_and_label(season, rd, orig_id, my_roster_id, roster_to_slot, total_teams, orig_pseudo, current_year):
+    is_current = (season == current_year)
+    slot = roster_to_slot.get(orig_id)
+
+    if is_current and slot is not None:
+        estimated_pick_pos = slot
+        tier_label = f"Pick {season} #{rd}.{slot:02d}"
     else:
-        pos_in_round = (total_teams + 1) / 2.0
-        slot_str = None
+        if orig_id == my_roster_id:
+            estimated_pick_pos = max(1, int(total_teams * 0.75))
+            tier_label = f"Pick {season} Mid/Late {rd}st" if rd == 1 else f"Pick {season} Mid/Late {rd}nd"
+        else:
+            estimated_pick_pos = max(1, int(total_teams * 0.35))
+            tier_label = f"Pick {season} Early/Mid {rd}st" if rd == 1 else f"Pick {season} Early/Mid {rd}nd"
 
-    abs_pos = (rd - 1) * total_teams + pos_in_round
-    year_diff = max(0, int(season) - int(current_year))
-    year_penalty = year_diff * 25
-    rank_val = round(15 + ((abs_pos**1.15) * 0.9) + year_penalty)
-
-    rd_tag = "1er" if rd == 1 else f"{rd}eme"
-    orig_tag = f" ({orig_pseudo})" if orig_id != my_roster_id else ""
-
-    if slot_str:
-        label = (
-            f"🎟️ Pick {season} {rd_tag} Rd -"
-            f" {slot_str}{orig_tag} [Est. Rank #{rank_val}]"
-        )
-        pick_name = f"Pick {season} {slot_str}{orig_tag}"
+    if rd == 1:
+        base_rank = 15
+    elif rd == 2:
+        base_rank = 45
+    elif rd == 3:
+        base_rank = 75
     else:
-        label = f"🎟️ Pick {season} {rd_tag} Rd{orig_tag} [Est. Rank #{rank_val}]"
-        pick_name = f"Pick {season} R{rd}{orig_tag}"
+        base_rank = 110
 
+    rank_val = base_rank + (estimated_pick_pos - 1) * 2
+    if not is_current:
+        rank_val += 12
+
+    label = f"🎟️ {tier_label} (@{orig_pseudo}) [Rank #{rank_val}]"
+    pick_name = f"Pick {season} Rd {rd} (@{orig_pseudo})"
     return rank_val, label, pick_name
+
+def save_trade_callback(select_key, trade_entry):
+    st.session_state["trade_history"].append(trade_entry)
+    add_trade_to_db(trade_entry)
+    st.session_state[select_key] = []
+    st.toast("Proposition enregistrée avec succès !", icon="📌")
 
 # --- FONCTIONS ALGORITHME UPGRADE PURE ---
 
@@ -447,15 +262,20 @@ def is_pure_upgrade(my_group_a_roster, target_player, reqs):
     Simule le lineup titulaire avec uniquement les joueurs du Groupe A.
     Retourne True si la cible apporte une réelle plus-value (comble un trou ou upgrade un starter).
     """
-    t_pos = target_player["target_pos"]
-    t_rank = target_player["target_rank"]
+    t_pos = target_player.get("target_pos")
     
+    # Ignorer le filtre (conserver le joueur) si la position n'est pas dans QB, RB, WR, TE
+    if t_pos not in ["QB", "RB", "WR", "TE"]:
+        return True
+
+    t_rank = target_player.get("target_rank", 9999)
+
     # Séparation de mon Groupe A par poste (triés par rang ADP croissant)
     my_by_pos = {"QB": [], "RB": [], "WR": [], "TE": []}
     for p in my_group_a_roster:
-        pos = p["position"]
+        pos = p.get("position")
         if pos in my_by_pos:
-            my_by_pos[pos].append(p["search_rank"])
+            my_by_pos[pos].append(p.get("search_rank", 9999))
             
     for pos in my_by_pos:
         my_by_pos[pos].sort()
@@ -472,11 +292,11 @@ def is_pure_upgrade(my_group_a_roster, target_player, reqs):
     if current_strict and t_rank < (current_strict[-1] - 15):
         return True
 
-    # 2. Vérification sur les slots Flex / Superflex si pas retenu en strict
-    # Remplissage des flex avec les restes du Groupe A
+    # 2. Vérification sur les slots Flex (RB/WR/TE) si pas retenu en strict
     flex_candidates = []
     for pos in ["RB", "WR", "TE"]:
-        flex_candidates.extend(my_by_pos[pos][reqs.get(pos, 0):])
+        start_idx = reqs.get(pos, 0)
+        flex_candidates.extend(my_by_pos[pos][start_idx:])
     flex_candidates.sort()
     
     needed_flex = reqs.get("FLEX", 0)
@@ -711,7 +531,7 @@ user_id_input = st.sidebar.text_input("ID Sleeper", value="742374956750540800")
 season_year = st.sidebar.selectbox("Saison", ["2026", "2025"], index=0)
 threshold_group_a = st.sidebar.slider("Seuil Groupe A (Parts min.)", min_value=2, max_value=5, value=3)
 
-# BOUTON BASCULE "UPGRADE PURE"
+# BOUTON BASCULE UPGRADE PURE
 filter_upgrade_pure = st.sidebar.toggle(
     "🔥 Filtre Upgrade Pure",
     value=False,
@@ -796,7 +616,7 @@ pending_trades = [t for t in st.session_state["trade_history"] if t["status"] ==
 pending_target_pairs = set((t["target_name"], t["league"]) for t in pending_trades)
 pending_offered_pairs = set((p_name, t["league"]) for t in pending_trades for p_name in t["offered_names"])
 
-# --- NAVIGATION ONGLETS ---
+# --- NAVIGATION ONGLETS 1 & 2 ---
 tab1, tab2, tab3 = st.tabs(["⭐ Groupe A (Targets)", "🔄 Groupe B (A Trader)", "🎯 Radar de Trade"])
 
 with tab1:
@@ -832,7 +652,6 @@ with tab2:
                 is_pending = (row["player_name"], l_name) in pending_target_pairs or (row["player_name"], l_name) in pending_offered_pairs
                 tag = " :gray[⏳ (Trade en cours)]" if is_pending else ""
                 st.markdown(f"• {l_name}{tag}")
-
 
 # ONGLET 3 : RADAR DE TRADE
 with tab3:
@@ -890,7 +709,7 @@ with tab3:
                                 st.toast("Offre rejetée et masquée du radar.", icon="🚫")
                             else:
                                 update_trade_status_in_db(p_trade["id"], new_st)
-                                if new_status == "Accepté":
+                                if new_st == "Accepté":
                                     st.toast("Trade accepté ! Effectifs mis à jour.", icon="✅")
 
                             for item in st.session_state["trade_history"]:
@@ -909,7 +728,6 @@ with tab3:
     st.subheader("💡 Opportunités de Trade Détectées")
 
     if target_opportunities:
-        # Construction de l'effectif du Groupe A par ligue pour le Filtre Upgrade Pure
         group_a_ids_set = set(group_a["player_id"])
         group_a_roster_by_league = {}
         for _, r_row in df_rosters.iterrows():
@@ -922,12 +740,10 @@ with tab3:
                     "search_rank": r_row["search_rank"]
                 })
 
-        # FILTRAGE RADAR (EXCLUSIONS LIGUES, BLACKLIST ET FILTRE UPGRADE PURE)
         radar_opps = []
         for o in target_opportunities:
             l_name = o["league_name"]
             
-            # 1. Filtres de base
             if l_name in excluded_leagues_input:
                 continue
             if o["owner_pseudo"] in st.session_state["blacklisted_owners"]:
@@ -937,7 +753,6 @@ with tab3:
             if (o["target_name"], l_name) in pending_target_pairs:
                 continue
 
-            # 2. Filtre Upgrade Pure (si activé)
             if filter_upgrade_pure:
                 my_g_a = group_a_roster_by_league.get(l_name, [])
                 reqs = league_reqs_map.get(l_name, {})
@@ -963,7 +778,6 @@ with tab3:
         if selected_pos != "Tous":
             filtered_opps = [o for o in filtered_opps if o["target_pos"] == selected_pos]
 
-        # REGROUPEMENT PAR JOUEUR
         grouped_by_player = {}
         for opp in filtered_opps:
             t_name = opp["target_name"]
@@ -1044,7 +858,6 @@ with tab3:
                     key=key_select
                 )
 
-                # ASSISTANT DE TRADE
                 target_val = get_asset_value(opp["target_rank"])
 
                 if selected_offers:
@@ -1104,3 +917,5 @@ with tab3:
 
     else:
         st.info("Aucune opportunité directe trouvée.")
+
+
