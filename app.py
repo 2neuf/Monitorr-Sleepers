@@ -276,7 +276,6 @@ def calculate_pick_rank_and_label(season, rd, orig_id, my_roster_id, roster_to_s
         pick_name = f"Pick {season} R{rd}{orig_tag}"
         
     return rank_val, label, pick_name
-
 @st.cache_data(ttl=600)
 def compute_all_data_and_opportunities(user_id, year, threshold_a, accepted_trades_tuple=()):
     all_players = load_sleeper_players()
@@ -647,21 +646,20 @@ with tab3:
             player_header = f"🎯 **{target_name}** ({first_opp['target_pos']}) - *{rank_str}* | **{league_text}**"
 
             with st.expander(player_header):
-                league_options = [f"🏟️ {o['league_name']} (@{o['owner_pseudo']})" for o in opps_list]
-                
-                if len(league_options) > 1:
+                # Affichage conditionnel : Menu déroulant si plusieurs ligues, simple sous-titre si 1 seule
+                if len(opps_list) > 1:
+                    league_options = [f"🏟️ {o['league_name']} (@{o['owner_pseudo']})" for o in opps_list]
                     selected_league_label = st.selectbox(
-                        "Choisir la ligue à afficher :",
+                        "Choisir la ligue :",
                         options=league_options,
                         key=f"select_league_for_player_{target_name}_{player_idx}"
                     )
                     selected_idx = league_options.index(selected_league_label)
                 else:
                     selected_idx = 0
+                    st.caption(f"🏟️ Ligue : **{first_opp['league_name']}** | Owner : **@{first_opp['owner_pseudo']}**")
 
                 opp = opps_list[selected_idx]
-
-                st.markdown(f"**Ligue :** `{opp['league_name']}` | **Owner :** `@{opp['owner_pseudo']}`")
 
                 matching_trades = [
                     (real_idx, trade) for real_idx, trade in enumerate(st.session_state["trade_history"])
