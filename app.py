@@ -65,12 +65,66 @@ def fetch_league_traded_picks(league_id):
     except:
         return []
 
-# Estimateur de valeur ADP pour un Draft Pick
-def get_draft_pick_rank(season, round_num, current_year):
-    year_diff = int(season) - int(current_year)
-    base_ranks = {1: 60, 2: 130, 3: 210, 4: 320}
-    base = base_ranks.get(round_num, 400)
-    return base + (year_diff * 20)
+@st.cache_data(ttl=3600)
+def fetch_league_draft_slots(league_id):
+    """ Récupère l'ordre exact des slots de draft (ex: slot 3 -> roster_id 3) """
+    url = f"https://api.sleeper.app/v1/league/{league_id}/drafts"
+    try:
+        drafts = requests.get(url).json()
+        if not drafts:
+            return {}
+        draft = drafts[0]
+        draft_id = draft.get("draft_id")
+        if not draft_id:
+            return {}
+        
+        d_res = requests.get(f"https://api.sleeper.app/v1/draft/{draft_id}").json()
+        slot_to_roster = d_res.get("slot_to_roster_id") or {}
+        
+        roster_to_slot = {}
+        for slot_str, roster_id in slot_to_roster.items():
+            try:
+                roster_to_slot[int(roster_id)] = int(slot_str)
+            except:
+                pass
+        return roster_to_slot
+    except:
+        return {}
+
+# --- CALCUL LOGARITHMIQUE DE LA VALEUR D'UN PICK ---
+def calculate_pick_rank_and_label(season, rd, orig_id, my_roster_id, roster_to_slot, total_teams, orig_pseudo, current_year):
+    # Slot exact uniquement disponible pour la saison en cours (ex: 2026)
+    slot = roster_to_slot.get(orig_id) if season == str(current_year) else None
+    
+    if slot is not None:
+        pos_in_round = slot
+        slot_str = f"{rd}.{slot:02d}" if slot < 10 else f"{rd}.{slot}"
+    else:
+        pos_in_round = (total_teams + 1) / 2.0
+        slot_str = None
+        
+    # Position absolue P dans la draft
+    abs_pos = (rd - 1) * total_teams + pos_in_round
+    
+    # Pénalité d'année
+    year_diff = max(0, int(season) - int(current_year))
+    year_penalty = year_diff * 25
+    
+    # Formule logarithmique de rang ADP
+    rank_val = round(15 + ((abs_pos ** 1.15) * 0.9) + year_penalty)
+    
+    # Libellé style Sleeper
+    rd_tag = "1er" if rd == 1 else f"{rd}eme"
+    orig_tag = f" ({orig_pseudo})" if orig_id != my_roster_id else ""
+    
+    if slot_str:
+        label = f"🎟️ Pick {season} {rd_tag} Rd - {slot_str}{orig_tag} [Est. Rank #{rank_val}]"
+        pick_name = f"Pick {season} {slot_str}{orig_tag}"
+    else:
+        label = f"🎟️ Pick {season} {rd_tag} Rd{orig_tag} [Est. Rank #{rank_val}]"
+        pick_name = f"Pick {season} R{rd}{orig_tag}"
+        
+    return rank_val, label, pick_name
 
 # --- CALCUL GLOBAL EN CACHE ---
 @st.cache_data(ttl=600)
@@ -87,7 +141,7 @@ def compute_all_data_and_opportunities(user_id, year, threshold_a):
     }
 
     user_rosters = []
-    user_roster_ids = {} # league_id -> roster_id
+    user_roster_ids = {}
 
     for league in leagues:
         l_id = league["league_id"]
@@ -138,12 +192,25 @@ def compute_all_data_and_opportunities(user_id, year, threshold_a):
         l_name = league["name"]
         my_roster_id = user_roster_ids.get(l_id)
 
-        # 1. Joueurs du Groupe B possédés dans cette ligue
+        # 1. Joueurs du Groupe B
         my_b_in_league = df_rosters[(df_rosters["league_id"] == l_id) & (df_rosters["player_id"].isin(group_b_ids))].copy()
 
-        # 2. Reconstitution des Draft Picks possédés dans cette ligue
+        # 2. Map des pseudos et slots de draft
+        league_users = fetch_league_users(l_id)
+        rosters = fetch_league_rosters(l_id)
+        total_teams = len(rosters) or league.get("total_rosters", 12)
+        
+        roster_id_to_pseudo = {}
+        for r in rosters:
+            r_id = r.get("roster_id")
+            o_id = r.get("owner_id")
+            roster_id_to_pseudo[r_id] = league_users.get(o_id, f"Équipe #{r_id}")
+
+        roster_to_slot = fetch_league_draft_slots(l_id)
+
+        # 3. Reconstitution des Draft Picks (2026, 2027, 2028)
         draft_rounds = league.get("settings", {}).get("draft_rounds", 4)
-        future_years = [str(int(year) + i) for i in range(1, 4)]
+        future_years = [str(int(year) + i) for i in range(0, 3)]
         
         owned_picks = set()
         if my_roster_id:
@@ -163,29 +230,25 @@ def compute_all_data_and_opportunities(user_id, year, threshold_a):
                 elif tp_owner == my_roster_id:
                     owned_picks.add((tp_season, tp_round, tp_orig))
 
-        # 3. Construction des options combinées (Joueurs Groupe B + Picks)
+        # 4. Construction et valorisation de la liste des assets
         b_sorted = my_b_in_league.sort_values(by="search_rank", ascending=True)
         b_options_list = []
-        b_names_map = {}
 
         for _, row in b_sorted.iterrows():
             label = f"🏃 {row['player_name']} ({row['position']} - {row['team']}) [Rank #{row['search_rank']}]"
             b_options_list.append((row['search_rank'], label, row['player_name']))
 
         for season, rd, orig_id in owned_picks:
-            rank_val = get_draft_pick_rank(season, rd, year)
-            orig_tag = f" (via #{orig_id})" if orig_id != my_roster_id else ""
-            label = f"🎟️ Pick {season} Tour {rd}{orig_tag} [Est. Rank #{rank_val}]"
-            pick_name = f"Pick {season} R{rd}"
+            orig_pseudo = roster_id_to_pseudo.get(orig_id, f"#{orig_id}")
+            rank_val, label, pick_name = calculate_pick_rank_and_label(
+                season, rd, orig_id, my_roster_id, roster_to_slot, total_teams, orig_pseudo, year
+            )
             b_options_list.append((rank_val, label, pick_name))
 
-        # Tri de tous les assets (joueurs + picks) par valeur d'ADP
+        # Tri complet par valeur d'ADP
         b_options_list.sort(key=lambda x: x[0])
         final_b_options = [opt[1] for opt in b_options_list]
         final_b_names_map = {opt[1]: opt[2] for opt in b_options_list}
-
-        league_users = fetch_league_users(l_id)
-        rosters = fetch_league_rosters(l_id)
 
         for r in rosters:
             if r.get("owner_id") != user_id:
