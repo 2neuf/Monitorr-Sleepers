@@ -248,7 +248,7 @@ def compute_all_data_and_opportunities(user_id, year, threshold_a, excluded_leag
             )
             b_options_list.append((rank_val, label, pick_name))
 
-        # Tri complet par valeur d'ADP
+        # Tri complet des assets par valeur d'ADP
         b_options_list.sort(key=lambda x: x[0])
         final_b_options = [opt[1] for opt in b_options_list]
         final_b_names_map = {opt[1]: opt[2] for opt in b_options_list}
@@ -275,7 +275,10 @@ def compute_all_data_and_opportunities(user_id, year, threshold_a, excluded_leag
                             "b_names_map": final_b_names_map
                         })
 
-    target_opportunities.sort(key=lambda x: x["target_rank"])
+    # TRI GLOBAL : 1. Taille de Roster (Décroissant), 2. Nom de Ligue (Alphabétique), 3. Rang Cible (Croissant)
+    target_opportunities.sort(
+        key=lambda x: (-league_size_map.get(x["league_name"], 0), x["league_name"], x["target_rank"])
+    )
     return df_rosters, group_a, group_b, target_opportunities, leagues, league_size_map
 
 
@@ -359,12 +362,9 @@ with tab3:
     if target_opportunities:
         col_f1, col_f2 = st.columns(2)
         
-        raw_leagues = list(set(o["league_name"] for o in target_opportunities))
-        sorted_leagues = sorted(
-            raw_leagues,
-            key=lambda name: (-league_size_map.get(name, 0), name)
-        )
-        all_leagues = ["Toutes"] + sorted_leagues
+        # Tri des ligues pour le menu déroulant : Taille de Roster (Décroissant), puis Alphabétique
+        raw_leagues = list(dict.fromkeys(o["league_name"] for o in target_opportunities))
+        all_leagues = ["Toutes"] + raw_leagues
         all_positions = ["Tous", "QB", "RB", "WR", "TE"]
 
         with col_f1:
