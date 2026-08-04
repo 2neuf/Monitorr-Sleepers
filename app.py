@@ -185,7 +185,7 @@ def compute_all_data_and_opportunities(user_id, year, threshold_a, excluded_leag
         l_id = league["league_id"]
         l_name = league["name"]
 
-        # Filtre d'exclusion du Radar de Trade
+        # Filtre d'exclusion réglé depuis les paramètres
         if l_name in excluded_leagues:
             continue
 
@@ -207,7 +207,7 @@ def compute_all_data_and_opportunities(user_id, year, threshold_a, excluded_leag
 
         roster_to_slot, completed_seasons = fetch_league_draft_info(l_id)
 
-        # 3. Reconstitution des Draft Picks (en excluant les drafts terminées)
+        # 3. Reconstitution des Draft Picks
         draft_rounds = league.get("settings", {}).get("draft_rounds", 4)
         future_years = [str(int(year) + i) for i in range(0, 3)]
         valid_years = [yr for yr in future_years if yr not in completed_seasons]
@@ -275,10 +275,8 @@ def compute_all_data_and_opportunities(user_id, year, threshold_a, excluded_leag
                             "b_names_map": final_b_names_map
                         })
 
-    # TRI GLOBAL : 1. Taille de Roster (Décroissant), 2. Nom de Ligue (Alphabétique), 3. Rang Cible (Croissant)
-    target_opportunities.sort(
-        key=lambda x: (-league_size_map.get(x["league_name"], 0), x["league_name"], x["target_rank"])
-    )
+    # TRI DES OPPORTUNITÉS PAR ADP CIBLE (ORDRE ORIGINAL)
+    target_opportunities.sort(key=lambda x: x["target_rank"])
     return df_rosters, group_a, group_b, target_opportunities, leagues, league_size_map
 
 
@@ -362,9 +360,13 @@ with tab3:
     if target_opportunities:
         col_f1, col_f2 = st.columns(2)
         
-        # Tri des ligues pour le menu déroulant : Taille de Roster (Décroissant), puis Alphabétique
-        raw_leagues = list(dict.fromkeys(o["league_name"] for o in target_opportunities))
-        all_leagues = ["Toutes"] + raw_leagues
+        # Tri des ligues dans le filtre déroulant par taille de roster décroissante (-taille)
+        raw_leagues = list(set(o["league_name"] for o in target_opportunities))
+        sorted_leagues = sorted(
+            raw_leagues,
+            key=lambda name: (-league_size_map.get(name, 0), name)
+        )
+        all_leagues = ["Toutes"] + sorted_leagues
         all_positions = ["Tous", "QB", "RB", "WR", "TE"]
 
         with col_f1:
