@@ -556,6 +556,41 @@ with tab2:
 
 # ONGLET 3 : RADAR DE TRADE
 with tab3:
+    # 📌 BLOC ÉPINGLÉ : TRADES EN COURS (Rouge Pâle)
+    if pending_trades:
+        st.markdown(
+            """
+            <div style="background-color: #fff5f5; border: 1px solid #feb2b2; padding: 15px; border-radius: 10px; margin-bottom: 25px;">
+                <h4 style="color: #c53030; margin-top: 0;">📌 Trades en Cours Épinglés</h4>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+        for p_idx, p_trade in enumerate(pending_trades):
+            with st.expander(f"⏳ **{p_trade['target_full']}** | Ligue : *{p_trade['league']}* | Owner : **@{p_trade['owner']}**", expanded=True):
+                col_st, col_dt = st.columns([1, 2])
+                with col_st:
+                    new_st = st.selectbox(
+                        "Statut",
+                        ["En cours", "Accepté", "Refusé"],
+                        index=0,
+                        key=f"pinned_status_{p_trade['id']}_{p_idx}"
+                    )
+                    if new_st != "En cours":
+                        update_trade_status_in_db(p_trade["id"], new_st)
+                        for item in st.session_state["trade_history"]:
+                            if item["id"] == p_trade["id"]:
+                                item["status"] = new_st
+                        if new_st == "Accepté":
+                            st.toast("Trade accepté ! Effectifs mis à jour.", icon="✅")
+                        st.rerun()
+
+                with col_dt:
+                    st.caption(f"Proposé le {p_trade['date']}")
+                    st.markdown(f"🤝 **Assets offerts :** {p_trade['offered_full']}")
+        st.markdown("---")
+
     st.subheader("💡 Opportunités de Trade Détectées")
 
     if target_opportunities:
