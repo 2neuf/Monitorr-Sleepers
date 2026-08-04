@@ -120,20 +120,29 @@ def calculate_pick_rank_and_label(season, rd, orig_id, my_roster_id, roster_to_s
         
     return rank_val, label, pick_name
 
-# --- CALCUL GLOBAL EN CACHE ---
+# --- CALCUL GLOBAL EN CACHE (INTEGRE LES TRADES ACCEPTEES) ---
 @st.cache_data(ttl=600)
-def compute_all_data_and_opportunities(user_id, year, threshold_a, excluded_leagues=()):
+def compute_all_data_and_opportunities(user_id, year, threshold_a, accepted_trades_tuple=()):
     all_players = load_sleeper_players()
     leagues = fetch_user_leagues(user_id, year)
     
     if not leagues:
         return None, None, None, [], [], {}
 
+    league_name_to_id = {l["name"]: l["league_id"] for l in leagues}
     league_size_map = {
         league["name"]: len(league.get("roster_positions") or [])
         for league in leagues
     }
 
+    # Map pour conversion Nom de joueur -> ID
+    name_to_player_id = {}
+    for p_id, p_info in all_players.items():
+        fname = p_info.get("full_name")
+        if fname:
+            name_to_player_id[fname] = p_id
+
+    # 1. Rosters initiaux
     user_rosters = []
     user_roster_ids = {}
 
@@ -145,11 +154,39 @@ def compute_all_data_and_opportunities(user_id, year, threshold_a, excluded_leag
                 user_roster_ids[l_id] = roster.get("roster_id")
                 for p_id in (roster.get("players") or []):
                     user_rosters.append({
-                        "player_id": p_id,
+                        "player_id": str(p_id),
                         "league_id": l_id,
                         "league_name": league["name"]
                     })
-                    
+
+    # 2. Application des trades acceptés
+    traded_away_picks = set()
+
+    for trade_league, target_id, target_name, offered_names in accepted_trades_tuple:
+        t_league_id = league_name_to_id.get(trade_league)
+        if not t_league_id:
+            continue
+
+        # Ajouter le joueur acquis au roster de cette ligue
+        acq_id = str(target_id) if target_id else name_to_player_id.get(target_name)
+        if acq_id:
+            user_rosters.append({
+                "player_id": str(acq_id),
+                "league_id": t_league_id,
+                "league_name": trade_league
+            })
+
+        # Retirer les joueurs ou picks cédés
+        for off_item in offered_names:
+            if off_item in name_to_player_id:
+                off_p_id = str(name_to_player_id[off_item])
+                user_rosters = [
+                    r for r in user_rosters
+                    if not (r["league_name"] == trade_league and r["player_id"] == off_p_id)
+                ]
+            else:
+                traded_away_picks.add((trade_league, off_item))
+
     if not user_rosters:
         return None, None, None, [], [], {}
 
@@ -184,11 +221,6 @@ def compute_all_data_and_opportunities(user_id, year, threshold_a, excluded_leag
     for league in leagues:
         l_id = league["league_id"]
         l_name = league["name"]
-
-        # Filtre d'exclusion réglé depuis les paramètres
-        if l_name in excluded_leagues:
-            continue
-
         my_roster_id = user_roster_ids.get(l_id)
 
         # 1. Joueurs du Groupe B
@@ -233,7 +265,7 @@ def compute_all_data_and_opportunities(user_id, year, threshold_a, excluded_leag
                 elif tp_owner == my_roster_id:
                     owned_picks.add((tp_season, tp_round, tp_orig))
 
-        # 4. Construction et valorisation de la liste des assets
+        # 4. Construction de la liste d'assets (Exclusion des picks cédés)
         b_sorted = my_b_in_league.sort_values(by="search_rank", ascending=True)
         b_options_list = []
 
@@ -246,7 +278,8 @@ def compute_all_data_and_opportunities(user_id, year, threshold_a, excluded_leag
             rank_val, label, pick_name = calculate_pick_rank_and_label(
                 season, rd, orig_id, my_roster_id, roster_to_slot, total_teams, orig_pseudo, year
             )
-            b_options_list.append((rank_val, label, pick_name))
+            if (l_name, pick_name) not in traded_away_picks:
+                b_options_list.append((rank_val, label, pick_name))
 
         # Tri complet des assets par valeur d'ADP
         b_options_list.sort(key=lambda x: x[0])
@@ -265,6 +298,7 @@ def compute_all_data_and_opportunities(user_id, year, threshold_a, excluded_leag
                         t_name, t_pos, t_team, t_rank = _get_info(target_id)
 
                         target_opportunities.append({
+                            "target_id": target_id,
                             "target_name": t_name,
                             "target_pos": t_pos,
                             "target_team": t_team,
@@ -275,7 +309,6 @@ def compute_all_data_and_opportunities(user_id, year, threshold_a, excluded_leag
                             "b_names_map": final_b_names_map
                         })
 
-    # TRI DES OPPORTUNITÉS PAR ADP CIBLE (ORDRE ORIGINAL)
     target_opportunities.sort(key=lambda x: x["target_rank"])
     return df_rosters, group_a, group_b, target_opportunities, leagues, league_size_map
 
@@ -286,7 +319,7 @@ user_id_input = st.sidebar.text_input("ID Sleeper", value="742374956750540800")
 season_year = st.sidebar.selectbox("Saison", ["2026", "2025"], index=0)
 threshold_group_a = st.sidebar.slider("Seuil Groupe A (Parts min.)", min_value=2, max_value=5, value=3)
 
-# Liste dynamique des ligues pour le champ d'exclusion
+# Liste des ligues pour l'exclusion de l'onglet Radar
 user_leagues_raw = fetch_user_leagues(user_id_input, season_year)
 all_league_names = sorted([l["name"] for l in user_leagues_raw]) if user_leagues_raw else []
 
@@ -294,21 +327,27 @@ excluded_leagues_input = st.sidebar.multiselect(
     "Exclure des ligues (Radar)",
     options=all_league_names,
     default=[],
-    help="Les ligues sélectionnées n'apparaîtront pas dans l'onglet Radar de Trade."
+    help="Masque instantanément ces ligues du Radar sans recharger les données."
 )
 
+# Extraction des trades acceptés sous forme de tuple hashable pour le cache
+accepted_trades = [t for t in st.session_state["trade_history"] if t["status"] == "Accepté"]
+accepted_trades_tuple = tuple(
+    (t["league"], t.get("target_id"), t["target_name"], tuple(t["offered_names"]))
+    for t in accepted_trades
+)
 
 # --- CHARGEMENT ET CALCUL ---
 with st.spinner("Analyse et calcul des opportunités..."):
     df_rosters, group_a, group_b, target_opportunities, leagues, league_size_map = compute_all_data_and_opportunities(
-        user_id_input, season_year, threshold_group_a, tuple(excluded_leagues_input)
+        user_id_input, season_year, threshold_group_a, accepted_trades_tuple
     )
 
 if df_rosters is None:
     st.warning("Aucun roster trouvé pour cet utilisateur/saison.")
     st.stop()
 
-# Extraction des paires (Nom, Ligue) actuellement "En cours"
+# Trades "En cours" pour l'étiquetage
 pending_trades = [t for t in st.session_state["trade_history"] if t["status"] == "En cours"]
 pending_target_pairs = set((t["target_name"], t["league"]) for t in pending_trades)
 pending_offered_pairs = set((p_name, t["league"]) for t in pending_trades for p_name in t["offered_names"])
@@ -358,10 +397,12 @@ with tab3:
     st.subheader("💡 Opportunités de Trade Détectées")
 
     if target_opportunities:
+        # 1. Filtre dynamique par ligue exclue (depuis la sidebar, sans rechargement)
+        radar_opps = [o for o in target_opportunities if o["league_name"] not in excluded_leagues_input]
+
         col_f1, col_f2 = st.columns(2)
         
-        # Tri des ligues dans le filtre déroulant par taille de roster décroissante (-taille)
-        raw_leagues = list(set(o["league_name"] for o in target_opportunities))
+        raw_leagues = list(set(o["league_name"] for o in radar_opps))
         sorted_leagues = sorted(
             raw_leagues,
             key=lambda name: (-league_size_map.get(name, 0), name)
@@ -374,7 +415,7 @@ with tab3:
         with col_f2:
             selected_pos = st.selectbox("Filtrer par poste ciblé", all_positions, key="trade_pos_filter")
 
-        filtered_opps = target_opportunities
+        filtered_opps = radar_opps
         if selected_league != "Toutes":
             filtered_opps = [o for o in filtered_opps if o["league_name"] == selected_league]
         if selected_pos != "Tous":
@@ -409,18 +450,18 @@ with tab3:
                                 index=["En cours", "Accepté", "Refusé"].index(current_status),
                                 key=f"status_select_{trade['id']}"
                             )
-                            if new_status == "Accepté":
-                                st.session_state["trade_history"].pop(real_idx)
-                                st.toast("Trade accepté ! Supprimé de l'historique.", icon="✅")
-                                st.rerun()
-                            elif new_status != current_status:
+                            if new_status != current_status:
                                 st.session_state["trade_history"][real_idx]["status"] = new_status
+                                if new_status == "Accepté":
+                                    st.toast("Trade accepté ! Effectifs et assets mis à jour.", icon="✅")
                                 st.rerun()
 
                         with col_details:
                             st.caption(f"Créé le {trade['date']}")
                             if trade["status"] == "Refusé":
                                 st.markdown(f"❌ **Proposé(s) :** :red[{trade['offered_full']}]")
+                            elif trade["status"] == "Accepté":
+                                st.markdown(f"✅ **Accepté :** :green[{trade['offered_full']}]")
                             else:
                                 st.markdown(f"🤝 **Proposé(s) :** {trade['offered_full']}")
                     st.divider()
@@ -444,6 +485,7 @@ with tab3:
                         "status": "En cours",
                         "league": opp["league_name"],
                         "owner": opp["owner_pseudo"],
+                        "target_id": opp["target_id"],
                         "target_name": opp["target_name"],
                         "target_full": f"{opp['target_name']} ({opp['target_pos']})",
                         "offered_full": ", ".join(selected_offers),
