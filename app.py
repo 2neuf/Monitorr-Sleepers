@@ -120,7 +120,7 @@ def calculate_pick_rank_and_label(season, rd, orig_id, my_roster_id, roster_to_s
         
     return rank_val, label, pick_name
 
-# --- CALCUL GLOBAL EN CACHE (INTEGRE LES TRADES ACCEPTEES) ---
+# --- CALCUL GLOBAL EN CACHE ---
 @st.cache_data(ttl=600)
 def compute_all_data_and_opportunities(user_id, year, threshold_a, accepted_trades_tuple=()):
     all_players = load_sleeper_players()
@@ -135,7 +135,6 @@ def compute_all_data_and_opportunities(user_id, year, threshold_a, accepted_trad
         for league in leagues
     }
 
-    # Map pour conversion Nom de joueur -> ID
     name_to_player_id = {}
     for p_id, p_info in all_players.items():
         fname = p_info.get("full_name")
@@ -167,7 +166,6 @@ def compute_all_data_and_opportunities(user_id, year, threshold_a, accepted_trad
         if not t_league_id:
             continue
 
-        # Ajouter le joueur acquis au roster de cette ligue
         acq_id = str(target_id) if target_id else name_to_player_id.get(target_name)
         if acq_id:
             user_rosters.append({
@@ -176,7 +174,6 @@ def compute_all_data_and_opportunities(user_id, year, threshold_a, accepted_trad
                 "league_name": trade_league
             })
 
-        # Retirer les joueurs ou picks cédés
         for off_item in offered_names:
             if off_item in name_to_player_id:
                 off_p_id = str(name_to_player_id[off_item])
@@ -265,7 +262,7 @@ def compute_all_data_and_opportunities(user_id, year, threshold_a, accepted_trad
                 elif tp_owner == my_roster_id:
                     owned_picks.add((tp_season, tp_round, tp_orig))
 
-        # 4. Construction de la liste d'assets (Exclusion des picks cédés)
+        # 4. Construction de la liste d'assets
         b_sorted = my_b_in_league.sort_values(by="search_rank", ascending=True)
         b_options_list = []
 
@@ -281,7 +278,6 @@ def compute_all_data_and_opportunities(user_id, year, threshold_a, accepted_trad
             if (l_name, pick_name) not in traded_away_picks:
                 b_options_list.append((rank_val, label, pick_name))
 
-        # Tri complet des assets par valeur d'ADP
         b_options_list.sort(key=lambda x: x[0])
         final_b_options = [opt[1] for opt in b_options_list]
         final_b_names_map = {opt[1]: opt[2] for opt in b_options_list}
@@ -319,18 +315,16 @@ user_id_input = st.sidebar.text_input("ID Sleeper", value="742374956750540800")
 season_year = st.sidebar.selectbox("Saison", ["2026", "2025"], index=0)
 threshold_group_a = st.sidebar.slider("Seuil Groupe A (Parts min.)", min_value=2, max_value=5, value=3)
 
-# Liste des ligues pour l'exclusion de l'onglet Radar
-user_leagues_raw = fetch_user_leagues(user_id_input, season_year)
-all_league_names = sorted([l["name"] for l in user_leagues_raw]) if user_leagues_raw else []
-
-excluded_leagues_input = st.sidebar.multiselect(
-    "Exclure des ligues (Radar)",
-    options=all_league_names,
-    default=[],
-    help="Masque instantanément ces ligues du Radar sans recharger les données."
+# Seuil ADP pour exclusion automatique de ligue
+rank_threshold_b = st.sidebar.number_input(
+    "Rank ADP max. asset Groupe B",
+    min_value=10,
+    max_value=300,
+    value=100,
+    step=10,
+    help="Exclut par défaut les ligues n'ayant aucun JOUEUR du Groupe B (picks exclus) sous ce rang ADP."
 )
 
-# Extraction des trades acceptés sous forme de tuple hashable pour le cache
 accepted_trades = [t for t in st.session_state["trade_history"] if t["status"] == "Accepté"]
 accepted_trades_tuple = tuple(
     (t["league"], t.get("target_id"), t["target_name"], tuple(t["offered_names"]))
@@ -346,6 +340,26 @@ with st.spinner("Analyse et calcul des opportunités..."):
 if df_rosters is None:
     st.warning("Aucun roster trouvé pour cet utilisateur/saison.")
     st.stop()
+
+# --- CALCUL DES LIGUES À EXCLURE PAR DÉFAUT ---
+# Filtre sur les seuls joueurs du Groupe B ayant un search_rank <= rank_threshold_b
+valid_b_players = group_b[group_b["search_rank"] <= rank_threshold_b]
+
+# Ensemble des ligues possédant au moins un joueur valide
+leagues_with_valid_b = set()
+for _, row in valid_b_players.iterrows():
+    leagues_with_valid_b.update(row["leagues"])
+
+all_league_names = sorted([l["name"] for l in leagues]) if leagues else []
+default_excluded_leagues = [lname for lname in all_league_names if lname not in leagues_with_valid_b]
+
+# Champ multiselect avec exclusion automatique pré-cochée
+excluded_leagues_input = st.sidebar.multiselect(
+    "Exclure des ligues (Radar)",
+    options=all_league_names,
+    default=default_excluded_leagues,
+    help="Ligues exclues automatiquement par manque d'assets solides en Groupe B (modifiable)."
+)
 
 # Trades "En cours" pour l'étiquetage
 pending_trades = [t for t in st.session_state["trade_history"] if t["status"] == "En cours"]
@@ -397,7 +411,6 @@ with tab3:
     st.subheader("💡 Opportunités de Trade Détectées")
 
     if target_opportunities:
-        # 1. Filtre dynamique par ligue exclue (depuis la sidebar, sans rechargement)
         radar_opps = [o for o in target_opportunities if o["league_name"] not in excluded_leagues_input]
 
         col_f1, col_f2 = st.columns(2)
