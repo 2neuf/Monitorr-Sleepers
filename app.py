@@ -557,46 +557,58 @@ with tab2:
 
 # ONGLET 3 : RADAR DE TRADE
 with tab3:
-    # 📌 BLOC ÉPINGLÉ : TRADES EN COURS (Rouge Pâle)
+    # 📌 BLOC ÉPINGLÉ : TRADES EN COURS (Fond Rouge Pâle unifié)
     if pending_trades:
         st.markdown(
             """
-            <div style="background-color: #fff5f5; border: 1px solid #feb2b2; padding: 15px; border-radius: 10px; margin-bottom: 25px;">
-                <h4 style="color: #c53030; margin-top: 0; margin-bottom: 15px;">📌 Trades en Cours Épinglés</h4>
+            <style>
+            div[data-testid="stVerticalBlock"] > div.pinned-box {
+                background-color: #fff5f5;
+                border: 1px solid #feb2b2;
+                border-radius: 10px;
+                padding: 16px;
+                margin-bottom: 25px;
+            }
+            </style>
             """,
             unsafe_allow_html=True
         )
 
-        for p_idx, p_trade in enumerate(pending_trades):
-            with st.expander(f"⏳ **{p_trade['target_full']}** | Ligue : *{p_trade['league']}* | Owner : **@{p_trade['owner']}**", expanded=True):
-                col_st, col_dt = st.columns([1, 2])
-                with col_st:
-                    new_st = st.selectbox(
-                        "Statut",
-                        ["En cours", "Accepté", "Refusé"],
-                        index=0,
-                        key=f"pinned_status_{p_trade['id']}_{p_idx}"
-                    )
-                    if new_st != "En cours":
-                        update_trade_status_in_db(p_trade["id"], new_st)
-                        for item in st.session_state["trade_history"]:
-                            if item["id"] == p_trade["id"]:
-                                item["status"] = new_st
-                        if new_st == "Accepté":
-                            st.toast("Trade accepté ! Effectifs mis à jour.", icon="✅")
-                        st.rerun()
+        pinned_container = st.container()
+        with pinned_container:
+            st.markdown('<div class="pinned-box">', unsafe_allow_html=True)
+            st.markdown('<h4 style="color: #c53030; margin-top: 0; margin-bottom: 15px;">📌 Trades en Cours Épinglés</h4>', unsafe_allow_html=True)
 
-                with col_dt:
-                    st.caption(f"Proposé le {p_trade['date']}")
-                    st.markdown(f"🤝 **Assets offerts :** {p_trade['offered_full']}")
+            for p_idx, p_trade in enumerate(pending_trades):
+                with st.expander(f"⏳ **{p_trade['target_full']}** | Ligue : *{p_trade['league']}* | Owner : **@{p_trade['owner']}**", expanded=True):
+                    col_st, col_dt = st.columns([1, 2])
+                    with col_st:
+                        new_st = st.selectbox(
+                            "Statut",
+                            ["En cours", "Accepté", "Refusé"],
+                            index=0,
+                            key=f"pinned_status_{p_trade['id']}_{p_idx}"
+                        )
+                        if new_st != "En cours":
+                            update_trade_status_in_db(p_trade["id"], new_st)
+                            for item in st.session_state["trade_history"]:
+                                if item["id"] == p_trade["id"]:
+                                    item["status"] = new_st
+                            if new_st == "Accepté":
+                                st.toast("Trade accepté ! Effectifs mis à jour.", icon="✅")
+                            st.rerun()
 
-        st.markdown("</div>", unsafe_allow_html=True)
+                    with col_dt:
+                        st.caption(f"Proposé le {p_trade['date']}")
+                        st.markdown(f"🤝 **Assets offerts :** {p_trade['offered_full']}")
+
+            st.markdown('</div>', unsafe_allow_html=True)
         st.markdown("---")
 
     st.subheader("💡 Opportunités de Trade Détectées")
 
     if target_opportunities:
-        # Exclusion des ligues décochées ET des opportunités ayant déjà un trade EN COURS
+        # Exclusion des ligues décochées ET des opportunités avec trade EN COURS
         radar_opps = [
             o for o in target_opportunities 
             if o["league_name"] not in excluded_leagues_input
@@ -624,83 +636,100 @@ with tab3:
         if selected_pos != "Tous":
             filtered_opps = [o for o in filtered_opps if o["target_pos"] == selected_pos]
 
-        st.write(f"**{len(filtered_opps)}** opportunité(s) disponible(s) :")
+        # REGROUPEMENT PAR JOUEUR
+        grouped_by_player = {}
+        for opp in filtered_opps:
+            t_name = opp["target_name"]
+            if t_name not in grouped_by_player:
+                grouped_by_player[t_name] = []
+            grouped_by_player[t_name].append(opp)
 
-        for idx, opp in enumerate(filtered_opps):
-            rank_str = f"Rank #{opp['target_rank']}" if opp['target_rank'] < 9000 else "Unranked"
+        st.write(f"**{len(grouped_by_player)}** joueur(s) disponible(s) ({len(filtered_opps)} opportunités au total) :")
 
-            header_text = f"🎯 **{opp['target_name']}** ({opp['target_pos']}) - *{rank_str}* | Ligue : *{opp['league_name']}* | Owner : **@{opp['owner_pseudo']}**"
+        for player_idx, (target_name, opps_list) in enumerate(grouped_by_player.items()):
+            first_opp = opps_list[0]
+            rank_str = f"Rank #{first_opp['target_rank']}" if first_opp['target_rank'] < 9000 else "Unranked"
+            nb_leagues = len(opps_list)
+            league_text = f"{nb_leagues} ligue" if nb_leagues == 1 else f"{nb_leagues} ligues"
 
-            with st.expander(header_text):
-                matching_trades = [
-                    (real_idx, trade) for real_idx, trade in enumerate(st.session_state["trade_history"])
-                    if trade["league"] == opp["league_name"] 
-                    and trade["target_name"] == opp["target_name"] 
-                    and trade["owner"] == opp["owner_pseudo"]
-                ]
+            player_header = f"🎯 **{target_name}** ({first_opp['target_pos']}) - *{rank_str}* | **{league_text}**"
 
-                if matching_trades:
-                    st.markdown("📋 **Propositions enregistrées pour ce trade :**")
-                    for real_idx, trade in matching_trades:
-                        col_status, col_details = st.columns([1, 2])
-                        with col_status:
-                            current_status = trade["status"]
-                            new_status = st.selectbox(
-                                "Statut",
-                                ["En cours", "Accepté", "Refusé"],
-                                index=["En cours", "Accepté", "Refusé"].index(current_status),
-                                key=f"status_select_{trade['id']}"
-                            )
-                            if new_status != current_status:
-                                st.session_state["trade_history"][real_idx]["status"] = new_status
-                                update_trade_status_in_db(trade["id"], new_status)
-                                if new_status == "Accepté":
-                                    st.toast("Trade accepté ! Effectifs et assets mis à jour.", icon="✅")
-                                st.rerun()
+            with st.expander(player_header):
+                for idx, opp in enumerate(opps_list):
+                    st.markdown(f"#### 🏟️ Ligue : **{opp['league_name']}** (Owner : **@{opp['owner_pseudo']}**)")
 
-                        with col_details:
-                            st.caption(f"Créé le {trade['date']}")
-                            if trade["status"] == "Refusé":
-                                st.markdown(f"❌ **Proposé(s) :** :red[{trade['offered_full']}]")
-                            elif trade["status"] == "Accepté":
-                                st.markdown(f"✅ **Accepté :** :green[{trade['offered_full']}]")
-                            else:
-                                st.markdown(f"🤝 **Proposé(s) :** {trade['offered_full']}")
-                    st.divider()
+                    matching_trades = [
+                        (real_idx, trade) for real_idx, trade in enumerate(st.session_state["trade_history"])
+                        if trade["league"] == opp["league_name"] 
+                        and trade["target_name"] == opp["target_name"] 
+                        and trade["owner"] == opp["owner_pseudo"]
+                    ]
 
-                st.markdown("👉 **Nouvelle proposition pour cette cible :**")
+                    if matching_trades:
+                        st.markdown("📋 **Propositions enregistrées :**")
+                        for real_idx, trade in matching_trades:
+                            col_status, col_details = st.columns([1, 2])
+                            with col_status:
+                                current_status = trade["status"]
+                                new_status = st.selectbox(
+                                    "Statut",
+                                    ["En cours", "Accepté", "Refusé"],
+                                    index=["En cours", "Accepté", "Refusé"].index(current_status),
+                                    key=f"status_select_{trade['id']}_{player_idx}_{idx}"
+                                )
+                                if new_status != current_status:
+                                    st.session_state["trade_history"][real_idx]["status"] = new_status
+                                    update_trade_status_in_db(trade["id"], new_status)
+                                    if new_status == "Accepté":
+                                        st.toast("Trade accepté ! Effectifs et assets mis à jour.", icon="✅")
+                                    st.rerun()
 
-                key_select = f"select_{opp['league_name']}_{opp['target_name']}_{opp['owner_pseudo']}_{idx}"
-                key_btn = f"btn_{opp['league_name']}_{opp['target_name']}_{opp['owner_pseudo']}_{idx}"
+                            with col_details:
+                                st.caption(f"Créé le {trade['date']}")
+                                if trade["status"] == "Refusé":
+                                    st.markdown(f"❌ **Proposé(s) :** :red[{trade['offered_full']}]")
+                                elif trade["status"] == "Accepté":
+                                    st.markdown(f"✅ **Accepté :** :green[{trade['offered_full']}]")
+                                else:
+                                    st.markdown(f"🤝 **Proposé(s) :** {trade['offered_full']}")
+                        st.divider()
 
-                selected_offers = st.multiselect(
-                    "Assets disponibles (Joueurs du Groupe B + Draft Picks, triés par ADP) :",
-                    options=opp["b_options"],
-                    key=key_select
-                )
+                    st.markdown("👉 **Nouvelle proposition pour cette ligue :**")
 
-                if selected_offers:
-                    raw_names = [opp["b_names_map"][opt] for opt in selected_offers]
-                    trade_entry = {
-                        "id": f"{opp['league_name']}_{opp['target_name']}_{datetime.now().timestamp()}",
-                        "date": datetime.now().strftime("%d/%m %H:%M"),
-                        "status": "En cours",
-                        "league": opp["league_name"],
-                        "owner": opp["owner_pseudo"],
-                        "target_id": opp["target_id"],
-                        "target_name": opp["target_name"],
-                        "target_full": f"{opp['target_name']} ({opp['target_pos']})",
-                        "offered_full": ", ".join(selected_offers),
-                        "offered_names": raw_names
-                    }
-                    st.button(
-                        "📌 Enregistrer cette proposition",
-                        key=key_btn,
-                        on_click=save_trade_callback,
-                        args=(key_select, trade_entry)
+                    key_select = f"select_{opp['league_name']}_{opp['target_name']}_{opp['owner_pseudo']}_{player_idx}_{idx}"
+                    key_btn = f"btn_{opp['league_name']}_{opp['target_name']}_{opp['owner_pseudo']}_{player_idx}_{idx}"
+
+                    selected_offers = st.multiselect(
+                        "Assets disponibles (Joueurs du Groupe B + Draft Picks, triés par ADP) :",
+                        options=opp["b_options"],
+                        key=key_select
                     )
-                else:
-                    st.button("📌 Enregistrer cette proposition", key=key_btn, disabled=True)
+
+                    if selected_offers:
+                        raw_names = [opp["b_names_map"][opt] for opt in selected_offers]
+                        trade_entry = {
+                            "id": f"{opp['league_name']}_{opp['target_name']}_{datetime.now().timestamp()}",
+                            "date": datetime.now().strftime("%d/%m %H:%M"),
+                            "status": "En cours",
+                            "league": opp["league_name"],
+                            "owner": opp["owner_pseudo"],
+                            "target_id": opp["target_id"],
+                            "target_name": opp["target_name"],
+                            "target_full": f"{opp['target_name']} ({opp['target_pos']})",
+                            "offered_full": ", ".join(selected_offers),
+                            "offered_names": raw_names
+                        }
+                        st.button(
+                            "📌 Enregistrer cette proposition",
+                            key=key_btn,
+                            on_click=save_trade_callback,
+                            args=(key_select, trade_entry)
+                        )
+                    else:
+                        st.button("📌 Enregistrer cette proposition", key=key_btn, disabled=True)
+                    
+                    if idx < len(opps_list) - 1:
+                        st.divider()
 
         if st.session_state["trade_history"]:
             st.markdown("---")
