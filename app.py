@@ -282,6 +282,7 @@ def calculate_pick_rank_and_label(season, rd, orig_id, my_roster_id, roster_to_s
         
     return rank_val, label, pick_name
 
+
 @st.cache_data(ttl=600)
 def compute_all_data_and_opportunities(user_id, year, threshold_a, accepted_trades_tuple=()):
     all_players = load_sleeper_players()
@@ -561,8 +562,7 @@ with tab3:
         st.markdown(
             """
             <div style="background-color: #fff5f5; border: 1px solid #feb2b2; padding: 15px; border-radius: 10px; margin-bottom: 25px;">
-                <h4 style="color: #c53030; margin-top: 0;">📌 Trades en Cours Épinglés</h4>
-            </div>
+                <h4 style="color: #c53030; margin-top: 0; margin-bottom: 15px;">📌 Trades en Cours Épinglés</h4>
             """,
             unsafe_allow_html=True
         )
@@ -589,12 +589,19 @@ with tab3:
                 with col_dt:
                     st.caption(f"Proposé le {p_trade['date']}")
                     st.markdown(f"🤝 **Assets offerts :** {p_trade['offered_full']}")
+
+        st.markdown("</div>", unsafe_allow_html=True)
         st.markdown("---")
 
     st.subheader("💡 Opportunités de Trade Détectées")
 
     if target_opportunities:
-        radar_opps = [o for o in target_opportunities if o["league_name"] not in excluded_leagues_input]
+        # Exclusion des ligues décochées ET des opportunités ayant déjà un trade EN COURS
+        radar_opps = [
+            o for o in target_opportunities 
+            if o["league_name"] not in excluded_leagues_input
+            and (o["target_name"], o["league_name"]) not in pending_target_pairs
+        ]
 
         col_f1, col_f2 = st.columns(2)
         
@@ -617,14 +624,12 @@ with tab3:
         if selected_pos != "Tous":
             filtered_opps = [o for o in filtered_opps if o["target_pos"] == selected_pos]
 
-        st.write(f"**{len(filtered_opps)}** opportunité(s) affichée(s) :")
+        st.write(f"**{len(filtered_opps)}** opportunité(s) disponible(s) :")
 
         for idx, opp in enumerate(filtered_opps):
-            is_target_pending = (opp["target_name"], opp["league_name"]) in pending_target_pairs
-            status_tag = " ⏳ [Trade en cours]" if is_target_pending else ""
             rank_str = f"Rank #{opp['target_rank']}" if opp['target_rank'] < 9000 else "Unranked"
 
-            header_text = f"🎯 **{opp['target_name']}** ({opp['target_pos']}) - *{rank_str}* | Ligue : *{opp['league_name']}* | Owner : **@{opp['owner_pseudo']}**{status_tag}"
+            header_text = f"🎯 **{opp['target_name']}** ({opp['target_pos']}) - *{rank_str}* | Ligue : *{opp['league_name']}* | Owner : **@{opp['owner_pseudo']}**"
 
             with st.expander(header_text):
                 matching_trades = [
