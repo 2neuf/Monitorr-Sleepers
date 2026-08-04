@@ -3,19 +3,126 @@ import requests
 import pandas as pd
 from datetime import datetime
 
+# Import du driver Turso (avec secours local SQLite si non configuré)
+try:
+    import libsql_experimental as libsql
+    HAS_LIBSQL = True
+except ImportError:
+    import sqlite3
+    HAS_LIBSQL = False
+
 # Configuration Streamlit pour mobile
 st.set_page_config(page_title="Sleeper Roster Manager", layout="wide")
 
-# Initialisation de l'historique des trades
+DB_FILE = "trade_history.db"
+
+# --- GESTION DE LA BASE DE DONNÉES TURSO / SQLITE ---
+
+def get_db_connection():
+    turso_url = st.secrets.get("TURSO_DATABASE_URL", "")
+    turso_token = st.secrets.get("TURSO_AUTH_TOKEN", "")
+
+    if HAS_LIBSQL and turso_url and turso_token:
+        return libsql.connect(database=turso_url, auth_token=turso_token)
+    else:
+        import sqlite3
+        return sqlite3.connect(DB_FILE)
+
+def init_db():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS trade_history (
+            id TEXT PRIMARY KEY,
+            date TEXT,
+            status TEXT,
+            league TEXT,
+            owner TEXT,
+            target_id TEXT,
+            target_name TEXT,
+            target_full TEXT,
+            offered_full TEXT,
+            offered_names TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def load_trades_from_db():
+    init_db()
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, date, status, league, owner, target_id, target_name, target_full, offered_full, offered_names FROM trade_history")
+    rows = cursor.fetchall()
+    trades = []
+    for r in rows:
+        t = {
+            "id": r[0],
+            "date": r[1],
+            "status": r[2],
+            "league": r[3],
+            "owner": r[4],
+            "target_id": r[5],
+            "target_name": r[6],
+            "target_full": r[7],
+            "offered_full": r[8],
+            "offered_names": r[9].split(";") if r[9] else []
+        }
+        trades.append(t)
+    conn.close()
+    return trades
+
+def save_trade_to_db(trade):
+    init_db()
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT OR REPLACE INTO trade_history 
+        (id, date, status, league, owner, target_id, target_name, target_full, offered_full, offered_names)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        trade["id"],
+        trade["date"],
+        trade["status"],
+        trade["league"],
+        trade["owner"],
+        str(trade.get("target_id", "")),
+        trade["target_name"],
+        trade["target_full"],
+        trade["offered_full"],
+        ";".join(trade["offered_names"])
+    ))
+    conn.commit()
+    conn.close()
+
+def update_trade_status_in_db(trade_id, status):
+    init_db()
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE trade_history SET status = ? WHERE id = ?", (status, trade_id))
+    conn.commit()
+    conn.close()
+
+def delete_all_trades_db():
+    init_db()
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM trade_history")
+    conn.commit()
+    conn.close()
+
+
+# Initialisation de l'historique en session à partir de la base de données
 if "trade_history" not in st.session_state:
-    st.session_state["trade_history"] = []
+    st.session_state["trade_history"] = load_trades_from_db()
 
 st.title("🏈 Sleeper Roster Manager")
 st.caption("Consolide tes rosters, trie par ADP et suis tes propositions de trade.")
 
-# Callback pour enregistrer et réinitialiser le multiselect proprement
+# Callback pour enregistrer en BD et réinitialiser le champ
 def save_trade_callback(select_key, trade_entry):
     st.session_state["trade_history"].append(trade_entry)
+    save_trade_to_db(trade_entry)
     st.session_state[select_key] = []
 
 # --- FONCTIONS API & CACHE ---
@@ -141,7 +248,6 @@ def compute_all_data_and_opportunities(user_id, year, threshold_a, accepted_trad
         if fname:
             name_to_player_id[fname] = p_id
 
-    # 1. Rosters initiaux
     user_rosters = []
     user_roster_ids = {}
 
@@ -158,7 +264,7 @@ def compute_all_data_and_opportunities(user_id, year, threshold_a, accepted_trad
                         "league_name": league["name"]
                     })
 
-    # 2. Application des trades acceptés
+    # Mise à jour avec les trades acceptés
     traded_away_picks = set()
 
     for trade_league, target_id, target_name, offered_names in accepted_trades_tuple:
@@ -220,10 +326,8 @@ def compute_all_data_and_opportunities(user_id, year, threshold_a, accepted_trad
         l_name = league["name"]
         my_roster_id = user_roster_ids.get(l_id)
 
-        # 1. Joueurs du Groupe B
         my_b_in_league = df_rosters[(df_rosters["league_id"] == l_id) & (df_rosters["player_id"].isin(group_b_ids))].copy()
 
-        # 2. Map des pseudos et slots
         league_users = fetch_league_users(l_id)
         rosters = fetch_league_rosters(l_id)
         total_teams = len(rosters) or league.get("total_rosters", 12)
@@ -236,7 +340,6 @@ def compute_all_data_and_opportunities(user_id, year, threshold_a, accepted_trad
 
         roster_to_slot, completed_seasons = fetch_league_draft_info(l_id)
 
-        # 3. Reconstitution des Draft Picks
         draft_rounds = league.get("settings", {}).get("draft_rounds", 4)
         future_years = [str(int(year) + i) for i in range(0, 3)]
         valid_years = [yr for yr in future_years if yr not in completed_seasons]
@@ -262,7 +365,6 @@ def compute_all_data_and_opportunities(user_id, year, threshold_a, accepted_trad
                 elif tp_owner == my_roster_id:
                     owned_picks.add((tp_season, tp_round, tp_orig))
 
-        # 4. Construction de la liste d'assets
         b_sorted = my_b_in_league.sort_values(by="search_rank", ascending=True)
         b_options_list = []
 
@@ -315,7 +417,6 @@ user_id_input = st.sidebar.text_input("ID Sleeper", value="742374956750540800")
 season_year = st.sidebar.selectbox("Saison", ["2026", "2025"], index=0)
 threshold_group_a = st.sidebar.slider("Seuil Groupe A (Parts min.)", min_value=2, max_value=5, value=3)
 
-# Seuil ADP pour exclusion automatique de ligue
 rank_threshold_b = st.sidebar.number_input(
     "Rank ADP max. asset Groupe B",
     min_value=10,
@@ -341,11 +442,9 @@ if df_rosters is None:
     st.warning("Aucun roster trouvé pour cet utilisateur/saison.")
     st.stop()
 
-# --- CALCUL DES LIGUES À EXCLURE PAR DÉFAUT ---
-# Filtre sur les seuls joueurs du Groupe B ayant un search_rank <= rank_threshold_b
+# Exclusion automatique basée sur la limite d'ADP des joueurs Groupe B
 valid_b_players = group_b[group_b["search_rank"] <= rank_threshold_b]
 
-# Ensemble des ligues possédant au moins un joueur valide
 leagues_with_valid_b = set()
 for _, row in valid_b_players.iterrows():
     leagues_with_valid_b.update(row["leagues"])
@@ -353,7 +452,6 @@ for _, row in valid_b_players.iterrows():
 all_league_names = sorted([l["name"] for l in leagues]) if leagues else []
 default_excluded_leagues = [lname for lname in all_league_names if lname not in leagues_with_valid_b]
 
-# Champ multiselect avec exclusion automatique pré-cochée
 excluded_leagues_input = st.sidebar.multiselect(
     "Exclure des ligues (Radar)",
     options=all_league_names,
@@ -361,7 +459,6 @@ excluded_leagues_input = st.sidebar.multiselect(
     help="Ligues exclues automatiquement par manque d'assets solides en Groupe B (modifiable)."
 )
 
-# Trades "En cours" pour l'étiquetage
 pending_trades = [t for t in st.session_state["trade_history"] if t["status"] == "En cours"]
 pending_target_pairs = set((t["target_name"], t["league"]) for t in pending_trades)
 pending_offered_pairs = set((p_name, t["league"]) for t in pending_trades for p_name in t["offered_names"])
@@ -465,6 +562,7 @@ with tab3:
                             )
                             if new_status != current_status:
                                 st.session_state["trade_history"][real_idx]["status"] = new_status
+                                update_trade_status_in_db(trade["id"], new_status)
                                 if new_status == "Accepté":
                                     st.toast("Trade accepté ! Effectifs et assets mis à jour.", icon="✅")
                                 st.rerun()
@@ -517,6 +615,7 @@ with tab3:
             st.markdown("---")
             if st.button("🗑️ Effacer l'ensemble de l'historique"):
                 st.session_state["trade_history"] = []
+                delete_all_trades_db()
                 st.rerun()
 
     else:
