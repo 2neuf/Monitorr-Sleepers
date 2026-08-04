@@ -557,7 +557,7 @@ with tab2:
 
 # ONGLET 3 : RADAR DE TRADE
 with tab3:
-    # 📌 BLOC ÉPINGLÉ : TRADES EN COURS (Fond Rouge Pâle unifié)
+    # 📌 BLOC ÉPINGLÉ : TRADES EN COURS
     if pending_trades:
         st.markdown(
             """
@@ -608,7 +608,6 @@ with tab3:
     st.subheader("💡 Opportunités de Trade Détectées")
 
     if target_opportunities:
-        # Exclusion des ligues décochées ET des opportunités avec trade EN COURS
         radar_opps = [
             o for o in target_opportunities 
             if o["league_name"] not in excluded_leagues_input
@@ -636,7 +635,6 @@ with tab3:
         if selected_pos != "Tous":
             filtered_opps = [o for o in filtered_opps if o["target_pos"] == selected_pos]
 
-        # REGROUPEMENT PAR JOUEUR
         grouped_by_player = {}
         for opp in filtered_opps:
             t_name = opp["target_name"]
@@ -646,15 +644,22 @@ with tab3:
 
         st.write(f"**{len(grouped_by_player)}** joueur(s) disponible(s) ({len(filtered_opps)} opportunités au total) :")
 
+        def close_player_expander(key_state):
+            st.session_state[key_state] = False
+
         for player_idx, (target_name, opps_list) in enumerate(grouped_by_player.items()):
             first_opp = opps_list[0]
             rank_str = f"Rank #{first_opp['target_rank']}" if first_opp['target_rank'] < 9000 else "Unranked"
             nb_leagues = len(opps_list)
             league_text = f"{nb_leagues} ligue" if nb_leagues == 1 else f"{nb_leagues} ligues"
 
+            player_key = f"expander_state_{target_name}_{player_idx}"
+            if player_key not in st.session_state:
+                st.session_state[player_key] = False
+
             player_header = f"🎯 **{target_name}** ({first_opp['target_pos']}) - *{rank_str}* | **{league_text}**"
 
-            with st.expander(player_header):
+            with st.expander(player_header, expanded=st.session_state[player_key]):
                 for idx, opp in enumerate(opps_list):
                     st.markdown(f"#### 🏟️ Ligue : **{opp['league_name']}** (Owner : **@{opp['owner_pseudo']}**)")
 
@@ -719,24 +724,4 @@ with tab3:
                             "offered_full": ", ".join(selected_offers),
                             "offered_names": raw_names
                         }
-                        st.button(
-                            "📌 Enregistrer cette proposition",
-                            key=key_btn,
-                            on_click=save_trade_callback,
-                            args=(key_select, trade_entry)
-                        )
-                    else:
-                        st.button("📌 Enregistrer cette proposition", key=key_btn, disabled=True)
-                    
-                    if idx < len(opps_list) - 1:
-                        st.divider()
-
-        if st.session_state["trade_history"]:
-            st.markdown("---")
-            if st.button("🗑️ Effacer l'ensemble de l'historique"):
-                st.session_state["trade_history"] = []
-                delete_all_trades_db()
-                st.rerun()
-
-    else:
-        st.info("Aucune opportunité directe trouvée.")
+            
