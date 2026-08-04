@@ -7,7 +7,6 @@ import streamlit as st
 # Configuration Streamlit pour mobile
 st.set_page_config(page_title="Sleeper Roster Manager", layout="wide")
 
-
 # --- FONCTION CALCULATEUR DE VALEUR (ADP -> PTS) ---
 def get_asset_value(rank):
     """Convertit un rang ADP/Pick en valeur numérique (échelle 0 - 10 000)"""
@@ -16,9 +15,7 @@ def get_asset_value(rank):
     val = round(10000 * math.exp(-0.018 * (rank - 1)))
     return max(50, val)
 
-
 # --- GESTION DE LA BASE DE DONNÉES TURSO (API HTTP) & SECOURS LOCAL ---
-
 
 def execute_turso_query(statements):
     turso_url = st.secrets.get("TURSO_DATABASE_URL", "")
@@ -32,14 +29,14 @@ def execute_turso_query(statements):
 
     headers = {
         "Authorization": f"Bearer {turso_token}",
-        "Content-Type": "application/json",
+        "Content-Type": "application/json"
     }
 
     requests_payload = []
     for stmt in statements:
         sql = stmt[0]
         args = stmt[1] if len(stmt) > 1 else []
-
+        
         formatted_args = []
         for arg in args:
             if arg is None:
@@ -51,9 +48,13 @@ def execute_turso_query(statements):
             else:
                 formatted_args.append({"type": "text", "value": str(arg)})
 
-        requests_payload.append(
-            {"type": "execute", "stmt": {"sql": sql, "args": formatted_args}}
-        )
+        requests_payload.append({
+            "type": "execute",
+            "stmt": {
+                "sql": sql,
+                "args": formatted_args
+            }
+        })
 
     payload = {"requests": requests_payload}
 
@@ -65,12 +66,9 @@ def execute_turso_query(statements):
         pass
     return None
 
-
 def init_db():
-    res = execute_turso_query(
-        [
-            (
-                """CREATE TABLE IF NOT EXISTS trade_history (
+    res = execute_turso_query([(
+        """CREATE TABLE IF NOT EXISTS trade_history (
             id TEXT PRIMARY KEY,
             date TEXT,
             status TEXT,
@@ -80,41 +78,27 @@ def init_db():
             target_name TEXT,
             target_full TEXT,
             offered_full TEXT,
-            offered_names TEXT
-        )""",
-                (),
-            )
-        ]
-    )
-
+            offered_names TEXT,
+            value_metrics TEXT
+        )""", ()
+    )])
+    
     if res is None:
         import sqlite3
-
         conn = sqlite3.connect("trade_history.db")
-        conn.execute(
-            """
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS trade_history (
                 id TEXT PRIMARY KEY, date TEXT, status TEXT, league TEXT, owner TEXT,
-                target_id TEXT, target_name TEXT, target_full TEXT, offered_full TEXT, offered_names TEXT
+                target_id TEXT, target_name TEXT, target_full TEXT, offered_full TEXT, offered_names TEXT, value_metrics TEXT
             )
-        """
-        )
+        """)
         conn.commit()
         conn.close()
 
-
 def load_trades_from_db():
     init_db()
-    res = execute_turso_query(
-        [
-            (
-                "SELECT id, date, status, league, owner, target_id, target_name,"
-                " target_full, offered_full, offered_names FROM trade_history",
-                (),
-            )
-        ]
-    )
-
+    res = execute_turso_query([("SELECT id, date, status, league, owner, target_id, target_name, target_full, offered_full, offered_names, value_metrics FROM trade_history", ())])
+    
     trades = []
     if res and "results" in res and res["results"]:
         result_exec = res["results"][0]
@@ -122,84 +106,55 @@ def load_trades_from_db():
             response = result_exec.get("response", {}).get("result", {})
             rows = response.get("rows", [])
             for r in rows:
-                trades.append(
-                    {
-                        "id": r[0]["value"],
-                        "date": r[1]["value"],
-                        "status": r[2]["value"],
-                        "league": r[3]["value"],
-                        "owner": r[4]["value"],
-                        "target_id": (
-                            r[5]["value"] if r[5]["type"] != "null" else ""
-                        ),
-                        "target_name": r[6]["value"],
-                        "target_full": r[7]["value"],
-                        "offered_full": r[8]["value"],
-                        "offered_names": (
-                            r[9]["value"].split(";") if r[9]["value"] else []
-                        ),
-                    }
-                )
+                trades.append({
+                    "id": r[0]["value"],
+                    "date": r[1]["value"],
+                    "status": r[2]["value"],
+                    "league": r[3]["value"],
+                    "owner": r[4]["value"],
+                    "target_id": r[5]["value"] if r[5]["type"] != "null" else "",
+                    "target_name": r[6]["value"],
+                    "target_full": r[7]["value"],
+                    "offered_full": r[8]["value"],
+                    "offered_names": r[9]["value"].split(";") if r[9]["value"] else [],
+                    "value_metrics": r[10]["value"] if len(r) > 10 and r[10]["type"] != "null" else ""
+                })
             return trades
 
     try:
         import sqlite3
-
         conn = sqlite3.connect("trade_history.db")
         cursor = conn.cursor()
-        cursor.execute(
-            "SELECT id, date, status, league, owner, target_id, target_name,"
-            " target_full, offered_full, offered_names FROM trade_history"
-        )
+        cursor.execute("SELECT id, date, status, league, owner, target_id, target_name, target_full, offered_full, offered_names, value_metrics FROM trade_history")
         for r in cursor.fetchall():
-            trades.append(
-                {
-                    "id": r[0],
-                    "date": r[1],
-                    "status": r[2],
-                    "league": r[3],
-                    "owner": r[4],
-                    "target_id": r[5],
-                    "target_name": r[6],
-                    "target_full": r[7],
-                    "offered_full": r[8],
-                    "offered_names": r[9].split(";") if r[9] else [],
-                }
-            )
+            trades.append({
+                "id": r[0], "date": r[1], "status": r[2], "league": r[3], "owner": r[4],
+                "target_id": r[5], "target_name": r[6], "target_full": r[7], "offered_full": r[8],
+                "offered_names": r[9].split(";") if r[9] else [],
+                "value_metrics": r[10] if len(r) > 10 and r[10] else ""
+            })
         conn.close()
     except Exception:
         pass
     return trades
 
-
 def save_trade_to_db(trade):
     init_db()
-    sql = (
-        "INSERT OR REPLACE INTO trade_history (id, date, status, league, owner,"
-        " target_id, target_name, target_full, offered_full, offered_names)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-    )
+    sql = """INSERT OR REPLACE INTO trade_history 
+             (id, date, status, league, owner, target_id, target_name, target_full, offered_full, offered_names, value_metrics)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
     args = (
-        trade["id"],
-        trade["date"],
-        trade["status"],
-        trade["league"],
-        trade["owner"],
-        str(trade.get("target_id", "")),
-        trade["target_name"],
-        trade["target_full"],
-        trade["offered_full"],
-        ";".join(trade["offered_names"]),
+        trade["id"], trade["date"], trade["status"], trade["league"], trade["owner"],
+        str(trade.get("target_id", "")), trade["target_name"], trade["target_full"],
+        trade["offered_full"], ";".join(trade["offered_names"]), trade.get("value_metrics", "")
     )
-
+    
     if execute_turso_query([(sql, args)]) is None:
         import sqlite3
-
         conn = sqlite3.connect("trade_history.db")
         conn.execute(sql, args)
         conn.commit()
         conn.close()
-
 
 def update_trade_status_in_db(trade_id, status):
     init_db()
@@ -207,42 +162,33 @@ def update_trade_status_in_db(trade_id, status):
     args = (status, trade_id)
     if execute_turso_query([(sql, args)]) is None:
         import sqlite3
-
         conn = sqlite3.connect("trade_history.db")
         conn.execute(sql, args)
         conn.commit()
         conn.close()
-
 
 def delete_all_trades_db():
     init_db()
     sql = "DELETE FROM trade_history"
     if execute_turso_query([(sql, ())]) is None:
         import sqlite3
-
         conn = sqlite3.connect("trade_history.db")
         conn.execute(sql)
         conn.commit()
         conn.close()
 
-
 if "trade_history" not in st.session_state:
     st.session_state["trade_history"] = load_trades_from_db()
 
 st.title("🏈 Sleeper Roster Manager")
-st.caption(
-    "Consolide tes rosters, trie par ADP et suis tes propositions de trade."
-)
-
+st.caption("Consolide tes rosters, trie par ADP et suis tes propositions de trade.")
 
 def save_trade_callback(select_key, trade_entry):
     st.session_state["trade_history"].append(trade_entry)
     save_trade_to_db(trade_entry)
     st.session_state[select_key] = []
 
-
 # --- FONCTIONS API SLEEPER ---
-
 
 @st.cache_data(ttl=86400)
 def load_sleeper_players():
@@ -250,19 +196,14 @@ def load_sleeper_players():
     res = requests.get(url)
     return res.json() if res.status_code == 200 else {}
 
-
 @st.cache_data(ttl=3600)
 def fetch_league_users(league_id):
     url = f"https://api.sleeper.app/v1/league/{league_id}/users"
     try:
         res = requests.get(url).json()
-        return {
-            u["user_id"]: u.get("display_name") or u.get("username") or "Anonyme"
-            for u in res
-        }
+        return {u["user_id"]: u.get("display_name") or u.get("username") or "Anonyme" for u in res}
     except Exception:
         return {}
-
 
 @st.cache_data(ttl=600)
 def fetch_league_rosters(league_id):
@@ -272,7 +213,6 @@ def fetch_league_rosters(league_id):
     except Exception:
         return []
 
-
 @st.cache_data(ttl=600)
 def fetch_user_leagues(user_id, year):
     url = f"https://api.sleeper.app/v1/user/{user_id}/leagues/nfl/{year}"
@@ -280,7 +220,6 @@ def fetch_user_leagues(user_id, year):
         return requests.get(url).json()
     except Exception:
         return []
-
 
 @st.cache_data(ttl=600)
 def fetch_league_traded_picks(league_id):
@@ -290,7 +229,6 @@ def fetch_league_traded_picks(league_id):
     except Exception:
         return []
 
-
 @st.cache_data(ttl=1800)
 def fetch_league_draft_info(league_id):
     url = f"https://api.sleeper.app/v1/league/{league_id}/drafts"
@@ -298,23 +236,21 @@ def fetch_league_draft_info(league_id):
         drafts = requests.get(url).json()
         if not drafts:
             return {}, set()
-
+        
         completed_seasons = set()
         roster_to_slot = {}
 
         for d in drafts:
             d_season = str(d.get("season"))
             d_status = d.get("status")
-
+            
             if d_status == "complete":
                 completed_seasons.add(d_season)
             else:
                 draft_id = d.get("draft_id")
                 if draft_id:
                     try:
-                        d_res = requests.get(
-                            f"https://api.sleeper.app/v1/draft/{draft_id}"
-                        ).json()
+                        d_res = requests.get(f"https://api.sleeper.app/v1/draft/{draft_id}").json()
                         slot_to_roster = d_res.get("slot_to_roster_id") or {}
                         for slot_str, roster_id in slot_to_roster.items():
                             roster_to_slot[int(roster_id)] = int(slot_str)
@@ -325,47 +261,33 @@ def fetch_league_draft_info(league_id):
     except Exception:
         return {}, set()
 
-
-def calculate_pick_rank_and_label(
-    season,
-    rd,
-    orig_id,
-    my_roster_id,
-    roster_to_slot,
-    total_teams,
-    orig_pseudo,
-    current_year,
-):
+def calculate_pick_rank_and_label(season, rd, orig_id, my_roster_id, roster_to_slot, total_teams, orig_pseudo, current_year):
     slot = roster_to_slot.get(orig_id) if season == str(current_year) else None
-
+    
     if slot is not None:
         pos_in_round = slot
         slot_str = f"{rd}.{slot:02d}" if slot < 10 else f"{rd}.{slot}"
     else:
         pos_in_round = (total_teams + 1) / 2.0
         slot_str = None
-
+        
     abs_pos = (rd - 1) * total_teams + pos_in_round
     year_diff = max(0, int(season) - int(current_year))
     year_penalty = year_diff * 25
-
-    rank_val = round(15 + ((abs_pos**1.15) * 0.9) + year_penalty)
-
+    
+    rank_val = round(15 + ((abs_pos ** 1.15) * 0.9) + year_penalty)
+    
     rd_tag = "1er" if rd == 1 else f"{rd}eme"
     orig_tag = f" ({orig_pseudo})" if orig_id != my_roster_id else ""
-
+    
     if slot_str:
-        label = (
-            f"🎟️ Pick {season} {rd_tag} Rd -"
-            f" {slot_str}{orig_tag} [Est. Rank #{rank_val}]"
-        )
+        label = f"🎟️ Pick {season} {rd_tag} Rd - {slot_str}{orig_tag} [Est. Rank #{rank_val}]"
         pick_name = f"Pick {season} {slot_str}{orig_tag}"
     else:
         label = f"🎟️ Pick {season} {rd_tag} Rd{orig_tag} [Est. Rank #{rank_val}]"
         pick_name = f"Pick {season} R{rd}{orig_tag}"
-
+        
     return rank_val, label, pick_name
-
 @st.cache_data(ttl=600)
 def compute_all_data_and_opportunities(
     user_id, year, threshold_a, accepted_trades_tuple=()
@@ -781,31 +703,23 @@ with tab3:
             }
             </style>
             """,
-            unsafe_allow_html=True,
+            unsafe_allow_html=True
         )
 
         pinned_container = st.container()
         with pinned_container:
             st.markdown('<div class="pinned-box">', unsafe_allow_html=True)
-            st.markdown(
-                '<h4 style="color: #c53030; margin-top: 0; margin-bottom:'
-                ' 15px;">📌 Trades en Cours Épinglés</h4>',
-                unsafe_allow_html=True,
-            )
+            st.markdown('<h4 style="color: #c53030; margin-top: 0; margin-bottom: 15px;">📌 Trades en Cours Épinglés</h4>', unsafe_allow_html=True)
 
             for p_idx, p_trade in enumerate(pending_trades):
-                with st.expander(
-                    f"⏳ **{p_trade['target_full']}** | Ligue :"
-                    f" *{p_trade['league']}* | Owner : **@{p_trade['owner']}**",
-                    expanded=True,
-                ):
+                with st.expander(f"⏳ **{p_trade['target_full']}** | Ligue : *{p_trade['league']}* | Owner : **@{p_trade['owner']}**", expanded=True):
                     col_st, col_dt = st.columns([1, 2])
                     with col_st:
                         new_st = st.selectbox(
                             "Statut",
                             ["En cours", "Accepté", "Refusé"],
                             index=0,
-                            key=f"pinned_status_{p_trade['id']}_{p_idx}",
+                            key=f"pinned_status_{p_trade['id']}_{p_idx}"
                         )
                         if new_st != "En cours":
                             update_trade_status_in_db(p_trade["id"], new_st)
@@ -813,60 +727,46 @@ with tab3:
                                 if item["id"] == p_trade["id"]:
                                     item["status"] = new_st
                             if new_st == "Accepté":
-                                st.toast(
-                                    "Trade accepté ! Effectifs mis à jour.",
-                                    icon="✅",
-                                )
+                                st.toast("Trade accepté ! Effectifs mis à jour.", icon="✅")
                             st.rerun()
 
                     with col_dt:
+                        metrics_tag = f" `[{p_trade['value_metrics']}]`" if p_trade.get("value_metrics") else ""
                         st.caption(f"Proposé le {p_trade['date']}")
-                        st.markdown(
-                            f"🤝 **Assets offerts :** {p_trade['offered_full']}"
-                        )
+                        st.markdown(f"🤝 **Assets offerts :** {p_trade['offered_full']}{metrics_tag}")
 
-            st.markdown("</div>", unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
         st.markdown("---")
 
     st.subheader("💡 Opportunités de Trade Détectées")
 
     if target_opportunities:
         radar_opps = [
-            o
-            for o in target_opportunities
+            o for o in target_opportunities 
             if o["league_name"] not in excluded_leagues_input
             and (o["target_name"], o["league_name"]) not in pending_target_pairs
         ]
 
         col_f1, col_f2 = st.columns(2)
-
+        
         raw_leagues = list(set(o["league_name"] for o in radar_opps))
         sorted_leagues = sorted(
-            raw_leagues, key=lambda name: (-league_size_map.get(name, 0), name)
+            raw_leagues,
+            key=lambda name: (-league_size_map.get(name, 0), name)
         )
         all_leagues = ["Toutes"] + sorted_leagues
         all_positions = ["Tous", "QB", "RB", "WR", "TE"]
 
         with col_f1:
-            selected_league = st.selectbox(
-                "Filtrer par ligue", all_leagues, key="trade_league_filter"
-            )
+            selected_league = st.selectbox("Filtrer par ligue", all_leagues, key="trade_league_filter")
         with col_f2:
-            selected_pos = st.selectbox(
-                "Filtrer par poste ciblé",
-                all_positions,
-                key="trade_pos_filter",
-            )
+            selected_pos = st.selectbox("Filtrer par poste ciblé", all_positions, key="trade_pos_filter")
 
         filtered_opps = radar_opps
         if selected_league != "Toutes":
-            filtered_opps = [
-                o for o in filtered_opps if o["league_name"] == selected_league
-            ]
+            filtered_opps = [o for o in filtered_opps if o["league_name"] == selected_league]
         if selected_pos != "Tous":
-            filtered_opps = [
-                o for o in filtered_opps if o["target_pos"] == selected_pos
-            ]
+            filtered_opps = [o for o in filtered_opps if o["target_pos"] == selected_pos]
 
         # REGROUPEMENT PAR JOUEUR
         grouped_by_player = {}
@@ -876,60 +776,35 @@ with tab3:
                 grouped_by_player[t_name] = []
             grouped_by_player[t_name].append(opp)
 
-        st.write(
-            f"**{len(grouped_by_player)}** joueur(s) disponible(s)"
-            f" ({len(filtered_opps)} opportunités au total) :"
-        )
+        st.write(f"**{len(grouped_by_player)}** joueur(s) disponible(s) ({len(filtered_opps)} opportunités au total) :")
 
-        for player_idx, (target_name, opps_list) in enumerate(
-            grouped_by_player.items()
-        ):
+        for player_idx, (target_name, opps_list) in enumerate(grouped_by_player.items()):
             first_opp = opps_list[0]
-            rank_str = (
-                f"Rank #{first_opp['target_rank']}"
-                if first_opp["target_rank"] < 9000
-                else "Unranked"
-            )
+            rank_str = f"Rank #{first_opp['target_rank']}" if first_opp['target_rank'] < 9000 else "Unranked"
             nb_leagues = len(opps_list)
-            league_text = (
-                f"{nb_leagues} ligue"
-                if nb_leagues == 1
-                else f"{nb_leagues} ligues"
-            )
+            league_text = f"{nb_leagues} ligue" if nb_leagues == 1 else f"{nb_leagues} ligues"
 
-            player_header = (
-                f"🎯 **{target_name}** ({first_opp['target_pos']}) - *{rank_str}*"
-                f" | **{league_text}**"
-            )
+            player_header = f"🎯 **{target_name}** ({first_opp['target_pos']}) - *{rank_str}* | **{league_text}**"
 
             with st.expander(player_header):
                 if len(opps_list) > 1:
-                    league_options = [
-                        f"🏟️ {o['league_name']} (@{o['owner_pseudo']})"
-                        for o in opps_list
-                    ]
+                    league_options = [f"🏟️ {o['league_name']} (@{o['owner_pseudo']})" for o in opps_list]
                     selected_league_label = st.selectbox(
                         "Choisir la ligue :",
                         options=league_options,
-                        key=f"select_league_for_player_{target_name}_{player_idx}",
+                        key=f"select_league_for_player_{target_name}_{player_idx}"
                     )
                     selected_idx = league_options.index(selected_league_label)
                 else:
                     selected_idx = 0
-                    st.caption(
-                        f"🏟️ Ligue : **{first_opp['league_name']}** | Owner :"
-                        f" **@{first_opp['owner_pseudo']}**"
-                    )
+                    st.caption(f"🏟️ Ligue : **{first_opp['league_name']}** | Owner : **@{first_opp['owner_pseudo']}**")
 
                 opp = opps_list[selected_idx]
 
                 matching_trades = [
-                    (real_idx, trade)
-                    for real_idx, trade in enumerate(
-                        st.session_state["trade_history"]
-                    )
-                    if trade["league"] == opp["league_name"]
-                    and trade["target_name"] == opp["target_name"]
+                    (real_idx, trade) for real_idx, trade in enumerate(st.session_state["trade_history"])
+                    if trade["league"] == opp["league_name"] 
+                    and trade["target_name"] == opp["target_name"] 
                     and trade["owner"] == opp["owner_pseudo"]
                 ]
 
@@ -942,60 +817,36 @@ with tab3:
                             new_status = st.selectbox(
                                 "Statut",
                                 ["En cours", "Accepté", "Refusé"],
-                                index=["En cours", "Accepté", "Refusé"].index(
-                                    current_status
-                                ),
-                                key=(
-                                    f"status_select_{trade['id']}_{player_idx}_{selected_idx}"
-                                ),
+                                index=["En cours", "Accepté", "Refusé"].index(current_status),
+                                key=f"status_select_{trade['id']}_{player_idx}_{selected_idx}"
                             )
                             if new_status != current_status:
-                                st.session_state["trade_history"][real_idx][
-                                    "status"
-                                ] = new_status
-                                update_trade_status_in_db(
-                                    trade["id"], new_status
-                                )
+                                st.session_state["trade_history"][real_idx]["status"] = new_status
+                                update_trade_status_in_db(trade["id"], new_status)
                                 if new_status == "Accepté":
-                                    st.toast(
-                                        "Trade accepté ! Effectifs mis à"
-                                        " jour.",
-                                        icon="✅",
-                                    )
+                                    st.toast("Trade accepté ! Effectifs mis à jour.", icon="✅")
                                 st.rerun()
 
                         with col_details:
+                            metrics_tag = f" `[{trade['value_metrics']}]`" if trade.get("value_metrics") else ""
                             st.caption(f"Créé le {trade['date']}")
                             if trade["status"] == "Refusé":
-                                st.markdown(
-                                    "❌ **Proposé(s) :"
-                                    f" ** :red[{trade['offered_full']}]"
-                                )
+                                st.markdown(f"❌ **Proposé(s) :** :red[{trade['offered_full']}]{metrics_tag}")
                             elif trade["status"] == "Accepté":
-                                st.markdown(
-                                    "✅ **Accepté :**"
-                                    f" :green[{trade['offered_full']}]"
-                                )
+                                st.markdown(f"✅ **Accepté :** :green[{trade['offered_full']}]{metrics_tag}")
                             else:
-                                st.markdown(
-                                    f"🤝 **Proposé(s) :** {trade['offered_full']}"
-                                )
+                                st.markdown(f"🤝 **Proposé(s) :** {trade['offered_full']}{metrics_tag}")
                     st.divider()
 
                 st.markdown("👉 **Nouvelle proposition pour cette ligue :**")
 
-                key_select = (
-                    f"select_{opp['league_name']}_{opp['target_name']}_{opp['owner_pseudo']}_{player_idx}_{selected_idx}"
-                )
-                key_btn = (
-                    f"btn_{opp['league_name']}_{opp['target_name']}_{opp['owner_pseudo']}_{player_idx}_{selected_idx}"
-                )
+                key_select = f"select_{opp['league_name']}_{opp['target_name']}_{opp['owner_pseudo']}_{player_idx}_{selected_idx}"
+                key_btn = f"btn_{opp['league_name']}_{opp['target_name']}_{opp['owner_pseudo']}_{player_idx}_{selected_idx}"
 
                 selected_offers = st.multiselect(
-                    "Assets disponibles (Joueurs Groupe B + Draft Picks, triés"
-                    " par ADP) :",
+                    "Assets disponibles (Joueurs Groupe B + Draft Picks, triés par ADP) :",
                     options=opp["b_options"],
-                    key=key_select,
+                    key=key_select
                 )
 
                 # --- ASSISTANT DE TRADE EN TEMPS RÉEL ---
@@ -1005,80 +856,49 @@ with tab3:
                     offered_ranks = []
                     for opt in selected_offers:
                         if "Rank #" in opt:
-                            r_val = int(
-                                opt.split("Rank #")[1].split("]")[0].strip()
-                            )
+                            r_val = int(opt.split("Rank #")[1].split("]")[0].strip())
                             offered_ranks.append(r_val)
                         else:
                             offered_ranks.append(200)
 
                     offered_val = sum(get_asset_value(r) for r in offered_ranks)
-                    diff_pct = round(
-                        ((offered_val - target_val) / target_val) * 100
-                    )
+                    diff_pct = round(((offered_val - target_val) / target_val) * 100)
+                    sign = "+" if diff_pct >= 0 else ""
 
                     col_v1, col_v2, col_v3 = st.columns(3)
                     col_v1.metric("🎯 Cible", f"{target_val:,} pts")
                     col_v2.metric("💼 Ton offre", f"{offered_val:,} pts")
 
                     if diff_pct >= 15:
-                        col_v3.metric(
-                            "⚖️ Bilan",
-                            f"+{diff_pct}%",
-                            delta="🟢 Offre très forte",
-                            delta_color="normal",
-                        )
+                        col_v3.metric("⚖️ Bilan", f"+{diff_pct}%", delta="🟢 Offre très forte", delta_color="normal")
                     elif diff_pct >= -10:
-                        col_v3.metric(
-                            "⚖️ Bilan",
-                            f"{diff_pct}%",
-                            delta="🟢 Équilibré",
-                            delta_color="normal",
-                        )
+                        col_v3.metric("⚖️ Bilan", f"{diff_pct}%", delta="🟢 Équilibré", delta_color="normal")
                     else:
-                        col_v3.metric(
-                            "⚖️ Bilan",
-                            f"{diff_pct}%",
-                            delta="🔴 Insuffisant",
-                            delta_color="inverse",
-                        )
+                        col_v3.metric("⚖️ Bilan", f"{diff_pct}%", delta="🔴 Insuffisant", delta_color="inverse")
 
-                    raw_names = [
-                        opp["b_names_map"][opt] for opt in selected_offers
-                    ]
+                    raw_names = [opp["b_names_map"][opt] for opt in selected_offers]
                     trade_entry = {
-                        "id": (
-                            f"{opp['league_name']}_{opp['target_name']}_{datetime.now().timestamp()}"
-                        ),
+                        "id": f"{opp['league_name']}_{opp['target_name']}_{datetime.now().timestamp()}",
                         "date": datetime.now().strftime("%d/%m %H:%M"),
                         "status": "En cours",
                         "league": opp["league_name"],
                         "owner": opp["owner_pseudo"],
                         "target_id": opp["target_id"],
                         "target_name": opp["target_name"],
-                        "target_full": (
-                            f"{opp['target_name']} ({opp['target_pos']})"
-                        ),
+                        "target_full": f"{opp['target_name']} ({opp['target_pos']})",
                         "offered_full": ", ".join(selected_offers),
                         "offered_names": raw_names,
+                        "value_metrics": f"{offered_val:,} vs {target_val:,} pts ({sign}{diff_pct}%)"
                     }
                     st.button(
                         "📌 Enregistrer cette proposition",
                         key=key_btn,
                         on_click=save_trade_callback,
-                        args=(key_select, trade_entry),
+                        args=(key_select, trade_entry)
                     )
                 else:
-                    st.info(
-                        f"💡 **Valeur estimée de la cible :** {target_val:,}"
-                        " pts. Sélectionne tes assets pour calculer"
-                        " l'équilibre."
-                    )
-                    st.button(
-                        "📌 Enregistrer cette proposition",
-                        key=key_btn,
-                        disabled=True,
-                    )
+                    st.info(f"💡 **Valeur estimée de la cible :** {target_val:,} pts. Sélectionne tes assets pour calculer l'équilibre.")
+                    st.button("📌 Enregistrer cette proposition", key=key_btn, disabled=True)
 
         if st.session_state["trade_history"]:
             st.markdown("---")
@@ -1089,4 +909,3 @@ with tab3:
 
     else:
         st.info("Aucune opportunité directe trouvée.")
-
