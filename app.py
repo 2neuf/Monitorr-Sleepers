@@ -65,35 +65,41 @@ def fetch_league_traded_picks(league_id):
     except:
         return []
 
-@st.cache_data(ttl=3600)
-def fetch_league_draft_slots(league_id):
-    """ Récupère l'ordre exact des slots de draft (ex: slot 3 -> roster_id 3) """
+@st.cache_data(ttl=1800)
+def fetch_league_draft_info(league_id):
+    """ Récupère l'ordre des slots et identifie les saisons dont la draft est déjà terminée """
     url = f"https://api.sleeper.app/v1/league/{league_id}/drafts"
     try:
         drafts = requests.get(url).json()
         if not drafts:
-            return {}
-        draft = drafts[0]
-        draft_id = draft.get("draft_id")
-        if not draft_id:
-            return {}
+            return {}, set()
         
-        d_res = requests.get(f"https://api.sleeper.app/v1/draft/{draft_id}").json()
-        slot_to_roster = d_res.get("slot_to_roster_id") or {}
-        
+        completed_seasons = set()
         roster_to_slot = {}
-        for slot_str, roster_id in slot_to_roster.items():
-            try:
-                roster_to_slot[int(roster_id)] = int(slot_str)
-            except:
-                pass
-        return roster_to_slot
+
+        for d in drafts:
+            d_season = str(d.get("season"))
+            d_status = d.get("status")
+            
+            if d_status == "complete":
+                completed_seasons.add(d_season)
+            else:
+                draft_id = d.get("draft_id")
+                if draft_id:
+                    try:
+                        d_res = requests.get(f"https://api.sleeper.app/v1/draft/{draft_id}").json()
+                        slot_to_roster = d_res.get("slot_to_roster_id") or {}
+                        for slot_str, roster_id in slot_to_roster.items():
+                            roster_to_slot[int(roster_id)] = int(slot_str)
+                    except:
+                        pass
+
+        return roster_to_slot, completed_seasons
     except:
-        return {}
+        return {}, set()
 
 # --- CALCUL LOGARITHMIQUE DE LA VALEUR D'UN PICK ---
 def calculate_pick_rank_and_label(season, rd, orig_id, my_roster_id, roster_to_slot, total_teams, orig_pseudo, current_year):
-    # Slot exact uniquement disponible pour la saison en cours (ex: 2026)
     slot = roster_to_slot.get(orig_id) if season == str(current_year) else None
     
     if slot is not None:
@@ -103,17 +109,12 @@ def calculate_pick_rank_and_label(season, rd, orig_id, my_roster_id, roster_to_s
         pos_in_round = (total_teams + 1) / 2.0
         slot_str = None
         
-    # Position absolue P dans la draft
     abs_pos = (rd - 1) * total_teams + pos_in_round
-    
-    # Pénalité d'année
     year_diff = max(0, int(season) - int(current_year))
     year_penalty = year_diff * 25
     
-    # Formule logarithmique de rang ADP
     rank_val = round(15 + ((abs_pos ** 1.15) * 0.9) + year_penalty)
     
-    # Libellé style Sleeper
     rd_tag = "1er" if rd == 1 else f"{rd}eme"
     orig_tag = f" ({orig_pseudo})" if orig_id != my_roster_id else ""
     
@@ -195,7 +196,7 @@ def compute_all_data_and_opportunities(user_id, year, threshold_a):
         # 1. Joueurs du Groupe B
         my_b_in_league = df_rosters[(df_rosters["league_id"] == l_id) & (df_rosters["player_id"].isin(group_b_ids))].copy()
 
-        # 2. Map des pseudos et slots de draft
+        # 2. Map des pseudos, slots et vérification des drafts terminées
         league_users = fetch_league_users(l_id)
         rosters = fetch_league_rosters(l_id)
         total_teams = len(rosters) or league.get("total_rosters", 12)
@@ -206,21 +207,25 @@ def compute_all_data_and_opportunities(user_id, year, threshold_a):
             o_id = r.get("owner_id")
             roster_id_to_pseudo[r_id] = league_users.get(o_id, f"Équipe #{r_id}")
 
-        roster_to_slot = fetch_league_draft_slots(l_id)
+        roster_to_slot, completed_seasons = fetch_league_draft_info(l_id)
 
-        # 3. Reconstitution des Draft Picks (2026, 2027, 2028)
+        # 3. Reconstitution des Draft Picks (en excluant les drafts terminées)
         draft_rounds = league.get("settings", {}).get("draft_rounds", 4)
         future_years = [str(int(year) + i) for i in range(0, 3)]
+        valid_years = [yr for yr in future_years if yr not in completed_seasons]
         
         owned_picks = set()
         if my_roster_id:
-            for yr in future_years:
+            for yr in valid_years:
                 for rd in range(1, draft_rounds + 1):
                     owned_picks.add((yr, rd, my_roster_id))
 
             traded_picks = fetch_league_traded_picks(l_id)
             for tp in traded_picks:
                 tp_season = str(tp.get("season"))
+                if tp_season in completed_seasons:
+                    continue # Ignore les échanges de picks d'une draft déjà terminée
+                
                 tp_round = tp.get("round")
                 tp_orig = tp.get("roster_id")
                 tp_owner = tp.get("owner_id")
