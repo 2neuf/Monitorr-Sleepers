@@ -57,6 +57,21 @@ def fetch_user_leagues(user_id, year):
     except:
         return []
 
+@st.cache_data(ttl=600)
+def fetch_league_traded_picks(league_id):
+    url = f"https://api.sleeper.app/v1/league/{league_id}/traded_picks"
+    try:
+        return requests.get(url).json()
+    except:
+        return []
+
+# Estimateur de valeur ADP pour un Draft Pick
+def get_draft_pick_rank(season, round_num, current_year):
+    year_diff = int(season) - int(current_year)
+    base_ranks = {1: 60, 2: 130, 3: 210, 4: 320}
+    base = base_ranks.get(round_num, 400)
+    return base + (year_diff * 20)
+
 # --- CALCUL GLOBAL EN CACHE ---
 @st.cache_data(ttl=600)
 def compute_all_data_and_opportunities(user_id, year, threshold_a):
@@ -66,18 +81,20 @@ def compute_all_data_and_opportunities(user_id, year, threshold_a):
     if not leagues:
         return None, None, None, [], [], {}
 
-    # Carte de la taille des rosters par ligue (nombre de slots configurés)
     league_size_map = {
         league["name"]: len(league.get("roster_positions") or [])
         for league in leagues
     }
 
     user_rosters = []
+    user_roster_ids = {} # league_id -> roster_id
+
     for league in leagues:
         l_id = league["league_id"]
         rosters = fetch_league_rosters(l_id)
         for roster in rosters:
             if roster.get("owner_id") == user_id:
+                user_roster_ids[l_id] = roster.get("roster_id")
                 for p_id in (roster.get("players") or []):
                     user_rosters.append({
                         "player_id": p_id,
@@ -119,10 +136,53 @@ def compute_all_data_and_opportunities(user_id, year, threshold_a):
     for league in leagues:
         l_id = league["league_id"]
         l_name = league["name"]
+        my_roster_id = user_roster_ids.get(l_id)
 
-        my_b_in_league = df_rosters[(df_rosters["league_id"] == l_id) & (df_rosters["player_id"].isin(group_b_ids))]
-        if my_b_in_league.empty:
-            continue
+        # 1. Joueurs du Groupe B possédés dans cette ligue
+        my_b_in_league = df_rosters[(df_rosters["league_id"] == l_id) & (df_rosters["player_id"].isin(group_b_ids))].copy()
+
+        # 2. Reconstitution des Draft Picks possédés dans cette ligue
+        draft_rounds = league.get("settings", {}).get("draft_rounds", 4)
+        future_years = [str(int(year) + i) for i in range(1, 4)]
+        
+        owned_picks = set()
+        if my_roster_id:
+            for yr in future_years:
+                for rd in range(1, draft_rounds + 1):
+                    owned_picks.add((yr, rd, my_roster_id))
+
+            traded_picks = fetch_league_traded_picks(l_id)
+            for tp in traded_picks:
+                tp_season = str(tp.get("season"))
+                tp_round = tp.get("round")
+                tp_orig = tp.get("roster_id")
+                tp_owner = tp.get("owner_id")
+
+                if tp_orig == my_roster_id and tp_owner != my_roster_id:
+                    owned_picks.discard((tp_season, tp_round, tp_orig))
+                elif tp_owner == my_roster_id:
+                    owned_picks.add((tp_season, tp_round, tp_orig))
+
+        # 3. Construction des options combinées (Joueurs Groupe B + Picks)
+        b_sorted = my_b_in_league.sort_values(by="search_rank", ascending=True)
+        b_options_list = []
+        b_names_map = {}
+
+        for _, row in b_sorted.iterrows():
+            label = f"🏃 {row['player_name']} ({row['position']} - {row['team']}) [Rank #{row['search_rank']}]"
+            b_options_list.append((row['search_rank'], label, row['player_name']))
+
+        for season, rd, orig_id in owned_picks:
+            rank_val = get_draft_pick_rank(season, rd, year)
+            orig_tag = f" (via #{orig_id})" if orig_id != my_roster_id else ""
+            label = f"🎟️ Pick {season} Tour {rd}{orig_tag} [Est. Rank #{rank_val}]"
+            pick_name = f"Pick {season} R{rd}"
+            b_options_list.append((rank_val, label, pick_name))
+
+        # Tri de tous les assets (joueurs + picks) par valeur d'ADP
+        b_options_list.sort(key=lambda x: x[0])
+        final_b_options = [opt[1] for opt in b_options_list]
+        final_b_names_map = {opt[1]: opt[2] for opt in b_options_list}
 
         league_users = fetch_league_users(l_id)
         rosters = fetch_league_rosters(l_id)
@@ -137,16 +197,6 @@ def compute_all_data_and_opportunities(user_id, year, threshold_a):
 
                     for target_id in targets_held:
                         t_name, t_pos, t_team, t_rank = _get_info(target_id)
-                        b_sorted = my_b_in_league.sort_values(by="search_rank", ascending=True)
-
-                        b_options = [
-                            f"{row['player_name']} ({row['position']} - {row['team']}) [Rank #{row['search_rank']}]"
-                            for _, row in b_sorted.iterrows()
-                        ]
-                        b_names_map = {
-                            f"{row['player_name']} ({row['position']} - {row['team']}) [Rank #{row['search_rank']}]": row['player_name']
-                            for _, row in b_sorted.iterrows()
-                        }
 
                         target_opportunities.append({
                             "target_name": t_name,
@@ -155,8 +205,8 @@ def compute_all_data_and_opportunities(user_id, year, threshold_a):
                             "target_rank": t_rank,
                             "league_name": l_name,
                             "owner_pseudo": owner_pseudo,
-                            "b_options": b_options,
-                            "b_names_map": b_names_map
+                            "b_options": final_b_options,
+                            "b_names_map": final_b_names_map
                         })
 
     target_opportunities.sort(key=lambda x: x["target_rank"])
@@ -225,7 +275,6 @@ with tab3:
     if target_opportunities:
         col_f1, col_f2 = st.columns(2)
         
-        # Tri des ligues par taille de roster décroissante (-taille), puis alphabétique
         raw_leagues = list(set(o["league_name"] for o in target_opportunities))
         sorted_leagues = sorted(
             raw_leagues,
@@ -296,7 +345,7 @@ with tab3:
                 key_btn = f"btn_{opp['league_name']}_{opp['target_name']}_{opp['owner_pseudo']}_{idx}"
 
                 selected_offers = st.multiselect(
-                    "Joueurs du Groupe B disponibles (triés par ADP) :",
+                    "Assets disponibles (Joueurs du Groupe B + Draft Picks, triés par ADP) :",
                     options=opp["b_options"],
                     key=key_select
                 )
