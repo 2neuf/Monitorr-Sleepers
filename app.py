@@ -3,36 +3,65 @@ import requests
 import pandas as pd
 from datetime import datetime
 
-# Import du driver Turso (avec secours local SQLite si non configuré)
-try:
-    import libsql_experimental as libsql
-    HAS_LIBSQL = True
-except ImportError:
-    import sqlite3
-    HAS_LIBSQL = False
-
 # Configuration Streamlit pour mobile
 st.set_page_config(page_title="Sleeper Roster Manager", layout="wide")
 
-DB_FILE = "trade_history.db"
+# --- GESTION DE LA BASE DE DONNÉES TURSO (API HTTP) & SECOURS LOCAL ---
 
-# --- GESTION DE LA BASE DE DONNÉES TURSO / SQLITE ---
-
-def get_db_connection():
+def execute_turso_query(statements):
     turso_url = st.secrets.get("TURSO_DATABASE_URL", "")
     turso_token = st.secrets.get("TURSO_AUTH_TOKEN", "")
 
-    if HAS_LIBSQL and turso_url and turso_token:
-        return libsql.connect(database=turso_url, auth_token=turso_token)
-    else:
-        import sqlite3
-        return sqlite3.connect(DB_FILE)
+    if not turso_url or not turso_token:
+        return None
+
+    # Conversion d'une URL libsql:// en https://
+    http_url = turso_url.replace("libsql://", "https://")
+    pipeline_url = f"{http_url}/v2/pipeline"
+
+    headers = {
+        "Authorization": f"Bearer {turso_token}",
+        "Content-Type": "application/json"
+    }
+
+    requests_payload = []
+    for stmt in statements:
+        sql = stmt[0]
+        args = stmt[1] if len(stmt) > 1 else []
+        
+        # Formatage des arguments pour l'API HTTP de Turso
+        formatted_args = []
+        for arg in args:
+            if arg is None:
+                formatted_args.append({"type": "null"})
+            elif isinstance(arg, int):
+                formatted_args.append({"type": "integer", "value": str(arg)})
+            elif isinstance(arg, float):
+                formatted_args.append({"type": "float", "value": arg})
+            else:
+                formatted_args.append({"type": "text", "value": str(arg)})
+
+        requests_payload.append({
+            "type": "execute",
+            "stmt": {
+                "sql": sql,
+                "args": formatted_args
+            }
+        })
+
+    payload = {"requests": requests_payload}
+
+    try:
+        res = requests.post(pipeline_url, json=payload, headers=headers, timeout=5)
+        if res.status_code == 200:
+            return res.json()
+    except Exception:
+        pass
+    return None
 
 def init_db():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS trade_history (
+    res = execute_turso_query([(
+        """CREATE TABLE IF NOT EXISTS trade_history (
             id TEXT PRIMARY KEY,
             date TEXT,
             status TEXT,
@@ -43,75 +72,104 @@ def init_db():
             target_full TEXT,
             offered_full TEXT,
             offered_names TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
+        )""", ()
+    )])
+    
+    # Secours SQLite local si Turso n'est pas configuré
+    if res is None:
+        import sqlite3
+        conn = sqlite3.connect("trade_history.db")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS trade_history (
+                id TEXT PRIMARY KEY, date TEXT, status TEXT, league TEXT, owner TEXT,
+                target_id TEXT, target_name TEXT, target_full TEXT, offered_full TEXT, offered_names TEXT
+            )
+        """)
+        conn.commit()
+        conn.close()
 
 def load_trades_from_db():
     init_db()
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, date, status, league, owner, target_id, target_name, target_full, offered_full, offered_names FROM trade_history")
-    rows = cursor.fetchall()
+    res = execute_turso_query([("SELECT id, date, status, league, owner, target_id, target_name, target_full, offered_full, offered_names FROM trade_history", ())])
+    
     trades = []
-    for r in rows:
-        t = {
-            "id": r[0],
-            "date": r[1],
-            "status": r[2],
-            "league": r[3],
-            "owner": r[4],
-            "target_id": r[5],
-            "target_name": r[6],
-            "target_full": r[7],
-            "offered_full": r[8],
-            "offered_names": r[9].split(";") if r[9] else []
-        }
-        trades.append(t)
-    conn.close()
+    if res and "results" in res and res["results"]:
+        result_exec = res["results"][0]
+        if result_exec.get("type") == "ok":
+            response = result_exec.get("response", {}).get("result", {})
+            rows = response.get("rows", [])
+            for r in rows:
+                trades.append({
+                    "id": r[0]["value"],
+                    "date": r[1]["value"],
+                    "status": r[2]["value"],
+                    "league": r[3]["value"],
+                    "owner": r[4]["value"],
+                    "target_id": r[5]["value"] if r[5]["type"] != "null" else "",
+                    "target_name": r[6]["value"],
+                    "target_full": r[7]["value"],
+                    "offered_full": r[8]["value"],
+                    "offered_names": r[9]["value"].split(";") if r[9]["value"] else []
+                })
+            return trades
+
+    # Fallback SQLite local
+    try:
+        import sqlite3
+        conn = sqlite3.connect("trade_history.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, date, status, league, owner, target_id, target_name, target_full, offered_full, offered_names FROM trade_history")
+        for r in cursor.fetchall():
+            trades.append({
+                "id": r[0], "date": r[1], "status": r[2], "league": r[3], "owner": r[4],
+                "target_id": r[5], "target_name": r[6], "target_full": r[7], "offered_full": r[8],
+                "offered_names": r[9].split(";") if r[9] else []
+            })
+        conn.close()
+    except Exception:
+        pass
     return trades
 
 def save_trade_to_db(trade):
     init_db()
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        INSERT OR REPLACE INTO trade_history 
-        (id, date, status, league, owner, target_id, target_name, target_full, offered_full, offered_names)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        trade["id"],
-        trade["date"],
-        trade["status"],
-        trade["league"],
-        trade["owner"],
-        str(trade.get("target_id", "")),
-        trade["target_name"],
-        trade["target_full"],
-        trade["offered_full"],
-        ";".join(trade["offered_names"])
-    ))
-    conn.commit()
-    conn.close()
+    sql = """INSERT OR REPLACE INTO trade_history 
+             (id, date, status, league, owner, target_id, target_name, target_full, offered_full, offered_names)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+    args = (
+        trade["id"], trade["date"], trade["status"], trade["league"], trade["owner"],
+        str(trade.get("target_id", "")), trade["target_name"], trade["target_full"],
+        trade["offered_full"], ";".join(trade["offered_names"])
+    )
+    
+    if execute_turso_query([(sql, args)]) is None:
+        import sqlite3
+        conn = sqlite3.connect("trade_history.db")
+        conn.execute(sql, args)
+        conn.commit()
+        conn.close()
 
 def update_trade_status_in_db(trade_id, status):
     init_db()
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("UPDATE trade_history SET status = ? WHERE id = ?", (status, trade_id))
-    conn.commit()
-    conn.close()
+    sql = "UPDATE trade_history SET status = ? WHERE id = ?"
+    args = (status, trade_id)
+    if execute_turso_query([(sql, args)]) is None:
+        import sqlite3
+        conn = sqlite3.connect("trade_history.db")
+        conn.execute(sql, args)
+        conn.commit()
+        conn.close()
 
 def delete_all_trades_db():
     init_db()
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM trade_history")
-    conn.commit()
-    conn.close()
+    sql = "DELETE FROM trade_history"
+    if execute_turso_query([(sql, ())]) is None:
+        import sqlite3
+        conn = sqlite3.connect("trade_history.db")
+        conn.execute(sql)
+        conn.commit()
+        conn.close()
 
-# Initialisation de l'historique en session à partir de la base de données
+# Initialisation de l'historique en session
 if "trade_history" not in st.session_state:
     st.session_state["trade_history"] = load_trades_from_db()
 
@@ -123,7 +181,7 @@ def save_trade_callback(select_key, trade_entry):
     save_trade_to_db(trade_entry)
     st.session_state[select_key] = []
 
-# --- FONCTIONS API & CACHE ---
+# --- FONCTIONS API SLEEPER & CACHE ---
 
 @st.cache_data(ttl=86400)
 def load_sleeper_players():
@@ -613,4 +671,3 @@ with tab3:
 
     else:
         st.info("Aucune opportunité directe trouvée.")
-
