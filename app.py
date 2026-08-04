@@ -13,12 +13,6 @@ if "trade_history" not in st.session_state:
 st.title("🏈 Sleeper Roster Manager")
 st.caption("Consolide tes rosters, trie par ADP et suis tes propositions de trade.")
 
-# Sidebar pour les paramètres uniquement
-st.sidebar.header("⚙️ Paramètres")
-user_id_input = st.sidebar.text_input("ID Sleeper", value="742374956750540800")
-season_year = st.sidebar.selectbox("Saison", ["2026", "2025"], index=0)
-threshold_group_a = st.sidebar.slider("Seuil Groupe A (Parts min.)", min_value=2, max_value=5, value=3)
-
 # Callback pour enregistrer et réinitialiser le multiselect proprement
 def save_trade_callback(select_key, trade_entry):
     st.session_state["trade_history"].append(trade_entry)
@@ -67,7 +61,6 @@ def fetch_league_traded_picks(league_id):
 
 @st.cache_data(ttl=1800)
 def fetch_league_draft_info(league_id):
-    """ Récupère l'ordre des slots et identifie les saisons dont la draft est déjà terminée """
     url = f"https://api.sleeper.app/v1/league/{league_id}/drafts"
     try:
         drafts = requests.get(url).json()
@@ -129,7 +122,7 @@ def calculate_pick_rank_and_label(season, rd, orig_id, my_roster_id, roster_to_s
 
 # --- CALCUL GLOBAL EN CACHE ---
 @st.cache_data(ttl=600)
-def compute_all_data_and_opportunities(user_id, year, threshold_a):
+def compute_all_data_and_opportunities(user_id, year, threshold_a, excluded_leagues=()):
     all_players = load_sleeper_players()
     leagues = fetch_user_leagues(user_id, year)
     
@@ -191,12 +184,17 @@ def compute_all_data_and_opportunities(user_id, year, threshold_a):
     for league in leagues:
         l_id = league["league_id"]
         l_name = league["name"]
+
+        # Filtre d'exclusion du Radar de Trade
+        if l_name in excluded_leagues:
+            continue
+
         my_roster_id = user_roster_ids.get(l_id)
 
         # 1. Joueurs du Groupe B
         my_b_in_league = df_rosters[(df_rosters["league_id"] == l_id) & (df_rosters["player_id"].isin(group_b_ids))].copy()
 
-        # 2. Map des pseudos, slots et vérification des drafts terminées
+        # 2. Map des pseudos et slots
         league_users = fetch_league_users(l_id)
         rosters = fetch_league_rosters(l_id)
         total_teams = len(rosters) or league.get("total_rosters", 12)
@@ -224,7 +222,7 @@ def compute_all_data_and_opportunities(user_id, year, threshold_a):
             for tp in traded_picks:
                 tp_season = str(tp.get("season"))
                 if tp_season in completed_seasons:
-                    continue # Ignore les échanges de picks d'une draft déjà terminée
+                    continue
                 
                 tp_round = tp.get("round")
                 tp_orig = tp.get("roster_id")
@@ -281,10 +279,28 @@ def compute_all_data_and_opportunities(user_id, year, threshold_a):
     return df_rosters, group_a, group_b, target_opportunities, leagues, league_size_map
 
 
+# --- SIDEBAR & PARAMÈTRES ---
+st.sidebar.header("⚙️ Paramètres")
+user_id_input = st.sidebar.text_input("ID Sleeper", value="742374956750540800")
+season_year = st.sidebar.selectbox("Saison", ["2026", "2025"], index=0)
+threshold_group_a = st.sidebar.slider("Seuil Groupe A (Parts min.)", min_value=2, max_value=5, value=3)
+
+# Liste dynamique des ligues pour le champ d'exclusion
+user_leagues_raw = fetch_user_leagues(user_id_input, season_year)
+all_league_names = sorted([l["name"] for l in user_leagues_raw]) if user_leagues_raw else []
+
+excluded_leagues_input = st.sidebar.multiselect(
+    "Exclure des ligues (Radar)",
+    options=all_league_names,
+    default=[],
+    help="Les ligues sélectionnées n'apparaîtront pas dans l'onglet Radar de Trade."
+)
+
+
 # --- CHARGEMENT ET CALCUL ---
 with st.spinner("Analyse et calcul des opportunités..."):
     df_rosters, group_a, group_b, target_opportunities, leagues, league_size_map = compute_all_data_and_opportunities(
-        user_id_input, season_year, threshold_group_a
+        user_id_input, season_year, threshold_group_a, tuple(excluded_leagues_input)
     )
 
 if df_rosters is None:
