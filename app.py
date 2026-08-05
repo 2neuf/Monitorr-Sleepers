@@ -21,22 +21,25 @@ TURSO_AUTH_TOKEN = st.secrets.get("TURSO_AUTH_TOKEN", "")
 def get_db_connection():
     """
     Connexion sécurisée à Turso via libsql_experimental.
-    Bascule sur SQLite local avec avertissement si indisponible.
+    Bascule sur SQLite local avec avertissement si le module est absent ou la connexion échoue.
     """
     st.session_state["db_warning"] = None
     
     if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
         try:
             import libsql_experimental as libsql
-            # Se connecte directement au Cloud Turso (libsql://)
             conn = libsql.connect(database=TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN)
             return conn
+        except ImportError:
+            st.session_state["db_warning"] = "Le package 'libsql_experimental' n'est pas installé dans l'environnement (ajoute-le à requirements.txt)."
+            return sqlite3.connect("local_trade_radar.db")
         except Exception as e:
             st.session_state["db_warning"] = f"Échec de connexion à Turso : {str(e)}. Mode local temporaire actif."
             return sqlite3.connect("local_trade_radar.db")
     else:
         st.session_state["db_warning"] = "Mode local éphémère (Secrets TURSO_DATABASE_URL / TURSO_AUTH_TOKEN non trouvés)."
         return sqlite3.connect("local_trade_radar.db")
+
 
 def init_db():
     """Initialise les tables de persistance."""
