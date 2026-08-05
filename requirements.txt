@@ -1,4 +1,5 @@
 streamlit
-pandas
 requests
+pandas
+numpy
 libsql_experimental
