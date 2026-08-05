@@ -18,6 +18,10 @@ st.set_page_config(
 # 1. BASE DE DONNÉES TURSO (HTTP API v2)
 # ==========================================
 
+# ==========================================
+# 1. BASE DE DONNÉES TURSO (HTTP API v2)
+# ==========================================
+
 TURSO_DATABASE_URL = st.secrets.get("TURSO_DATABASE_URL", "")
 TURSO_AUTH_TOKEN = st.secrets.get("TURSO_AUTH_TOKEN", "")
 
@@ -81,20 +85,29 @@ def execute_turso_query(statements):
 
 
 def init_db():
-    """Crée les tables si elles n'existent pas encore (schéma 10 colonnes)."""
+    """Crée les tables et migre le schéma vers 11 colonnes."""
     st.session_state["db_warning"] = None
     if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
         try:
+            # 1. Création des tables si absentes
             execute_turso_query([
                 ("""CREATE TABLE IF NOT EXISTS trade_history (
                     id TEXT PRIMARY KEY, date TEXT, status TEXT, league TEXT, owner TEXT,
                     target_id TEXT, target_name TEXT, target_full TEXT, offered_full TEXT,
-                    offered_names TEXT
+                    offered_names TEXT, value_metrics TEXT
                 );""", []),
                 ("""CREATE TABLE IF NOT EXISTS blacklist (
                     id TEXT PRIMARY KEY, type TEXT, owner TEXT, target_name TEXT, league TEXT
                 );""", [])
             ])
+            
+            # 2. Migration automatique si la colonne manque sur l'ancienne table
+            try:
+                execute_turso_query([("ALTER TABLE trade_history ADD COLUMN value_metrics TEXT;", [])])
+            except Exception:
+                # Si la colonne existe déjà, Turso lève une erreur qu'on ignore silencieusement
+                pass
+                
         except Exception as e:
             st.session_state["db_warning"] = f"Échec de connexion Turso HTTP : {str(e)}"
     else:
@@ -102,11 +115,11 @@ def init_db():
 
 
 def load_persisted_state():
-    """Charge l'historique des trades et la blacklist depuis la BDD distante."""
+    """Charge l'historique (11 colonnes) et la blacklist depuis Turso."""
     if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN and not st.session_state.get("db_warning"):
         try:
             res = execute_turso_query([
-                ("SELECT id, date, status, league, owner, target_id, target_name, target_full, offered_full, offered_names FROM trade_history;", []),
+                ("SELECT id, date, status, league, owner, target_id, target_name, target_full, offered_full, offered_names, value_metrics FROM trade_history;", []),
                 ("SELECT id, type, owner, target_name, league FROM blacklist;", [])
             ])
             
@@ -126,7 +139,7 @@ def load_persisted_state():
                             "target_full": row[7], 
                             "offered_full": row[8],
                             "offered_names": str(row[9]).split(";;") if row[9] else [],
-                            "value_metrics": ""
+                            "value_metrics": row[10] if len(row) >= 11 and row[10] is not None else ""
                         })
 
             b_owners = set()
@@ -148,17 +161,17 @@ def load_persisted_state():
 
 
 def add_trade_to_db(trade):
-    """Insère ou met à jour un trade dans la BDD."""
+    """Insère un trade avec ses 11 colonnes (incluant value_metrics)."""
     if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
         try:
             offered_str = ";;".join(trade.get("offered_names", []))
             sql = """INSERT OR REPLACE INTO trade_history 
-                     (id, date, status, league, owner, target_id, target_name, target_full, offered_full, offered_names)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);"""
+                     (id, date, status, league, owner, target_id, target_name, target_full, offered_full, offered_names, value_metrics)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);"""
             params = [
                 trade["id"], trade["date"], trade["status"], trade["league"], trade["owner"],
                 trade.get("target_id", ""), trade["target_name"], trade["target_full"],
-                trade["offered_full"], offered_str
+                trade["offered_full"], offered_str, trade.get("value_metrics", "")
             ]
             execute_turso_query([(sql, params)])
         except Exception as e:
@@ -166,7 +179,6 @@ def add_trade_to_db(trade):
 
 
 def update_trade_status_in_db(trade_id, status):
-    """Met à jour le statut d'un trade (ex: Accepté / Refusé)."""
     if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
         try:
             execute_turso_query([("UPDATE trade_history SET status = ? WHERE id = ?;", [status, trade_id])])
@@ -175,7 +187,6 @@ def update_trade_status_in_db(trade_id, status):
 
 
 def delete_all_trades_db():
-    """Vide la table trade_history."""
     if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
         try:
             execute_turso_query([("DELETE FROM trade_history;", [])])
@@ -184,7 +195,6 @@ def delete_all_trades_db():
 
 
 def add_to_blacklist_db(item_id, item_type, owner, target_name="", league=""):
-    """Ajoute un élément à la blacklist."""
     if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
         try:
             sql = "INSERT OR REPLACE INTO blacklist (id, type, owner, target_name, league) VALUES (?, ?, ?, ?, ?);"
@@ -194,7 +204,6 @@ def add_to_blacklist_db(item_id, item_type, owner, target_name="", league=""):
 
 
 def remove_from_blacklist_db(item_id):
-    """Supprime un élément de la blacklist."""
     if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
         try:
             execute_turso_query([("DELETE FROM blacklist WHERE id = ?;", [item_id])])
@@ -206,19 +215,17 @@ def remove_from_blacklist_db(item_id):
 # 2. INITIALISATION ET CHARGEMENT
 # ==========================================
 
-# Initialisation du schéma dans Turso
 init_db()
 
-# Chargement initial dans la session Streamlit
 if "trade_history" not in st.session_state:
     t_hist, b_owners, b_targets = load_persisted_state()
     st.session_state["trade_history"] = t_hist
     st.session_state["blacklisted_owners"] = b_owners
     st.session_state["blacklisted_targets"] = b_targets
 
-# Bandeau d'alerte si problème de connexion
 if st.session_state.get("db_warning"):
     st.error(f"⚠️ **Alerte BDD Turso :** {st.session_state['db_warning']}")
+
 
 
 # --- APPELS API SLEEPER & VALORISATION ---
