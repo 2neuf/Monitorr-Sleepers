@@ -15,46 +15,70 @@ st.set_page_config(
 )
 
 # --- BASE DE DONNÉES TURSO / SQLITE ---
-TURSO_DATABASE_URL = st.secrets.get("TURSO_DATABASE_URL", "sqlite.db")
+TURSO_DATABASE_URL = st.secrets.get("TURSO_DATABASE_URL", "")
 TURSO_AUTH_TOKEN = st.secrets.get("TURSO_AUTH_TOKEN", "")
 
 def get_db_connection():
-    """Établit la connexion avec Turso/SQLite local."""
-    conn = sqlite3.connect("local_trade_radar.db")
-    return conn
+    """
+    Tente la connexion à Turso via SQLite Cloud/libsql.
+    Si indisponible, bascule sur SQLite local et stocke un flag d'erreur.
+    """
+    st.session_state["db_warning"] = False
+    
+    if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
+        try:
+            # On adapte l'URL libsql:// pour la connexion sqlite3 standard si besoin
+            db_url = TURSO_DATABASE_URL.replace("libsql://", "https://")
+            conn = sqlite3.connect(f"{db_url}?authToken={TURSO_AUTH_TOKEN}", check_same_thread=False)
+            return conn
+        except Exception as e:
+            # En cas d'échec de connexion Turso, alerte visuelle dans l'UI
+            st.session_state["db_warning"] = f"Échec de connexion à Turso : {str(e)}"
+            return sqlite3.connect("local_trade_radar.db")
+    else:
+        st.session_state["db_warning"] = "Mode local éphémère (Secrets Turso non configurés). Les données seront perdues au redémarrage."
+        return sqlite3.connect("local_trade_radar.db")
 
 def init_db():
     """Initialise les tables de persistance."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS trade_history (
-            id TEXT PRIMARY KEY,
-            date TEXT,
-            status TEXT,
-            league TEXT,
-            owner TEXT,
-            target_id TEXT,
-            target_name TEXT,
-            target_full TEXT,
-            offered_full TEXT,
-            offered_names TEXT,
-            value_metrics TEXT
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS blacklist (
-            id TEXT PRIMARY KEY,
-            type TEXT,
-            owner TEXT,
-            target_name TEXT,
-            league TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS trade_history (
+                id TEXT PRIMARY KEY,
+                date TEXT,
+                status TEXT,
+                league TEXT,
+                owner TEXT,
+                target_id TEXT,
+                target_name TEXT,
+                target_full TEXT,
+                offered_full TEXT,
+                offered_names TEXT,
+                value_metrics TEXT
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS blacklist (
+                id TEXT PRIMARY KEY,
+                type TEXT,
+                owner TEXT,
+                target_name TEXT,
+                league TEXT
+            )
+        """)
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        st.session_state["db_warning"] = f"Erreur critique DB : {str(e)}"
 
 init_db()
+
+# --- ALERTE CONNEXION BDD ---
+if st.session_state.get("db_warning"):
+    st.error(f"⚠️ **Attention Persistance :** {st.session_state['db_warning']}")
+
 
 def load_persisted_state():
     """Charge l'historique et les blacklists depuis la DB."""
