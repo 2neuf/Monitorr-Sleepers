@@ -88,6 +88,7 @@ def init_db():
 
 init_db()
 
+
 def load_persisted_state():
     if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN and not st.session_state.get("db_warning"):
         try:
@@ -97,22 +98,32 @@ def load_persisted_state():
             ])
             
             trades = []
-            for row in res[0][1]:
-                trades.append({
-                    "id": row[0], "date": row[1], "status": row[2], "league": row[3],
-                    "owner": row[4], "target_id": row[5], "target_name": row[6],
-                    "target_full": row[7], "offered_full": row[8],
-                    "offered_names": row[9].split(";;") if row[9] else [],
-                    "value_metrics": row[10]
-                })
+            # On vérifie qu'on a bien reçu le premier résultat (trades)
+            if res and len(res) > 0 and len(res[0]) > 1:
+                for row in res[0][1]:
+                    trades.append({
+                        "id": row[0], 
+                        "date": row[1], 
+                        "status": row[2], 
+                        "league": row[3],
+                        "owner": row[4], 
+                        "target_id": row[5], 
+                        "target_name": row[6],
+                        "target_full": row[7], 
+                        "offered_full": row[8],
+                        "offered_names": row[9].split(";;") if row[9] else [],
+                        "value_metrics": row[10]
+                    })
 
             b_owners = set()
             b_targets = set()
-            for row in res[1][1]:
-                if row[1] == "owner":
-                    b_owners.add(row[2])
-                elif row[1] == "target":
-                    b_targets.add((row[3], row[4], row[2]))
+            # On vérifie qu'on a bien reçu le second résultat (blacklist)
+            if res and len(res) > 1 and len(res[1]) > 1:
+                for row in res[1][1]:
+                    if row[1] == "owner":
+                        b_owners.add(row[2])
+                    elif row[1] == "target":
+                        b_targets.add((row[3], row[4], row[2]))
 
             return trades, b_owners, b_targets
         except Exception as e:
@@ -120,11 +131,6 @@ def load_persisted_state():
 
     return [], set(), set()
 
-if "trade_history" not in st.session_state:
-    t_hist, b_owners, b_targets = load_persisted_state()
-    st.session_state["trade_history"] = t_hist
-    st.session_state["blacklisted_owners"] = b_owners
-    st.session_state["blacklisted_targets"] = b_targets
 
 def add_trade_to_db(trade):
     if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
