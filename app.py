@@ -14,13 +14,15 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# --- BASE DE DONNÉES TURSO (HTTP API) / SQLITE LOCAL ---
+# ==========================================
+# 1. BASE DE DONNÉES TURSO (HTTP API v2)
+# ==========================================
+
 TURSO_DATABASE_URL = st.secrets.get("TURSO_DATABASE_URL", "")
 TURSO_AUTH_TOKEN = st.secrets.get("TURSO_AUTH_TOKEN", "")
 
 def execute_turso_query(statements):
     """Exécute des requêtes SQL directement via l'API HTTP v2 de Turso."""
-    # Conversion de l'URL libsql:// ou sqlite:// vers https://
     url = TURSO_DATABASE_URL.replace("libsql://", "https://").replace("sqlite://", "https://")
     if not url.endswith("/v2/pipeline"):
         url = url.rstrip("/") + "/v2/pipeline"
@@ -56,18 +58,30 @@ def execute_turso_query(statements):
     
     data = response.json()
     results = []
+    
     for res in data.get("results", []):
         if res.get("type") == "ok":
             response_obj = res.get("response", {}).get("result", {})
             cols = [c["name"] for c in response_obj.get("cols", [])]
             rows = []
             for r in response_obj.get("rows", []):
-                row_vals = [cell.get("value") for cell in r]
+                row_vals = []
+                for cell in r:
+                    if isinstance(cell, dict):
+                        row_vals.append(cell.get("value"))
+                    else:
+                        row_vals.append(cell)
                 rows.append(row_vals)
             results.append((cols, rows))
+        elif res.get("type") == "error":
+            err_msg = res.get("error", {}).get("message", "Erreur Turso inconnue")
+            raise Exception(f"SQL Error: {err_msg}")
+            
     return results
 
+
 def init_db():
+    """Crée les tables si elles n'existent pas encore."""
     st.session_state["db_warning"] = None
     if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
         try:
@@ -86,10 +100,9 @@ def init_db():
     else:
         st.session_state["db_warning"] = "Secrets Turso non configurés."
 
-init_db()
-
 
 def load_persisted_state():
+    """Charge l'historique des trades et la blacklist depuis Turso."""
     if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN and not st.session_state.get("db_warning"):
         try:
             res = execute_turso_query([
@@ -98,32 +111,34 @@ def load_persisted_state():
             ])
             
             trades = []
-            # On vérifie qu'on a bien reçu le premier résultat (trades)
-            if res and len(res) > 0 and len(res[0]) > 1:
-                for row in res[0][1]:
-                    trades.append({
-                        "id": row[0], 
-                        "date": row[1], 
-                        "status": row[2], 
-                        "league": row[3],
-                        "owner": row[4], 
-                        "target_id": row[5], 
-                        "target_name": row[6],
-                        "target_full": row[7], 
-                        "offered_full": row[8],
-                        "offered_names": row[9].split(";;") if row[9] else [],
-                        "value_metrics": row[10]
-                    })
+            if res and len(res) > 0:
+                cols, rows = res[0]
+                for row in rows:
+                    if len(row) >= 11:
+                        trades.append({
+                            "id": row[0], 
+                            "date": row[1], 
+                            "status": row[2], 
+                            "league": row[3],
+                            "owner": row[4], 
+                            "target_id": row[5], 
+                            "target_name": row[6],
+                            "target_full": row[7], 
+                            "offered_full": row[8],
+                            "offered_names": str(row[9]).split(";;") if row[9] else [],
+                            "value_metrics": row[10]
+                        })
 
             b_owners = set()
             b_targets = set()
-            # On vérifie qu'on a bien reçu le second résultat (blacklist)
-            if res and len(res) > 1 and len(res[1]) > 1:
-                for row in res[1][1]:
-                    if row[1] == "owner":
-                        b_owners.add(row[2])
-                    elif row[1] == "target":
-                        b_targets.add((row[3], row[4], row[2]))
+            if res and len(res) > 1:
+                cols_b, rows_b = res[1]
+                for row in rows_b:
+                    if len(row) >= 5:
+                        if row[1] == "owner":
+                            b_owners.add(row[2])
+                        elif row[1] == "target":
+                            b_targets.add((row[3], row[4], row[2]))
 
             return trades, b_owners, b_targets
         except Exception as e:
@@ -132,55 +147,23 @@ def load_persisted_state():
     return [], set(), set()
 
 
-def add_trade_to_db(trade):
-    if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
-        try:
-            offered_str = ";;".join(trade.get("offered_names", []))
-            sql = """INSERT OR REPLACE INTO trade_history 
-                     (id, date, status, league, owner, target_id, target_name, target_full, offered_full, offered_names, value_metrics)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);"""
-            params = [
-                trade["id"], trade["date"], trade["status"], trade["league"], trade["owner"],
-                trade.get("target_id", ""), trade["target_name"], trade["target_full"],
-                trade["offered_full"], offered_str, trade.get("value_metrics", "")
-            ]
-            execute_turso_query([(sql, params)])
-        except Exception as e:
-            st.toast(f"Erreur sauvegarde BDD : {e}", icon="⚠️")
+# ==========================================
+# 2. INITIALISATION AU DÉMARRAGE
+# ==========================================
 
-def update_trade_status_in_db(trade_id, status):
-    if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
-        try:
-            execute_turso_query([("UPDATE trade_history SET status = ? WHERE id = ?;", [status, trade_id])])
-        except Exception as e:
-            st.toast(f"Erreur mise à jour BDD : {e}", icon="⚠️")
+# 1. Initialiser la BDD (création tables si besoin)
+init_db()
 
-def delete_all_trades_db():
-    if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
-        try:
-            execute_turso_query([("DELETE FROM trade_history;", [])])
-        except Exception as e:
-            st.toast(f"Erreur suppression BDD : {e}", icon="⚠️")
+# 2. Charger les données au premier lancement de la session
+if "trade_history" not in st.session_state:
+    t_hist, b_owners, b_targets = load_persisted_state()
+    st.session_state["trade_history"] = t_hist
+    st.session_state["blacklisted_owners"] = b_owners
+    st.session_state["blacklisted_targets"] = b_targets
 
-def add_to_blacklist_db(item_id, item_type, owner, target_name="", league=""):
-    if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
-        try:
-            sql = "INSERT OR REPLACE INTO blacklist (id, type, owner, target_name, league) VALUES (?, ?, ?, ?, ?);"
-            execute_turso_query([(sql, [item_id, item_type, owner, target_name, league])])
-        except Exception as e:
-            st.toast(f"Erreur blacklist BDD : {e}", icon="⚠️")
-
-def remove_from_blacklist_db(item_id):
-    if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
-        try:
-            execute_turso_query([("DELETE FROM blacklist WHERE id = ?;", [item_id])])
-        except Exception as e:
-            st.toast(f"Erreur retrait blacklist : {e}", icon="⚠️")
-
-# Affichage de l'alerte si problème
+# 3. Afficher le bandeau d'erreur s'il y a un souci de connexion
 if st.session_state.get("db_warning"):
     st.error(f"⚠️ **Alerte BDD Turso :** {st.session_state['db_warning']}")
-
 
 
 
