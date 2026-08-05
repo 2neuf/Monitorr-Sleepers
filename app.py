@@ -1,4 +1,4 @@
-3import streamlit as st
+import streamlit as st
 import requests
 import sqlite3
 import pandas as pd
