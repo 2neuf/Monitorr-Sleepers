@@ -20,23 +20,22 @@ TURSO_AUTH_TOKEN = st.secrets.get("TURSO_AUTH_TOKEN", "")
 
 def get_db_connection():
     """
-    Tente la connexion à Turso via SQLite Cloud/libsql.
-    Si indisponible, bascule sur SQLite local et stocke un flag d'erreur.
+    Connexion sécurisée à Turso via libsql_experimental.
+    Bascule sur SQLite local avec avertissement si indisponible.
     """
-    st.session_state["db_warning"] = False
+    st.session_state["db_warning"] = None
     
     if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
         try:
-            # On adapte l'URL libsql:// pour la connexion sqlite3 standard si besoin
-            db_url = TURSO_DATABASE_URL.replace("libsql://", "https://")
-            conn = sqlite3.connect(f"{db_url}?authToken={TURSO_AUTH_TOKEN}", check_same_thread=False)
+            import libsql_experimental as libsql
+            # Se connecte directement au Cloud Turso (libsql://)
+            conn = libsql.connect(database=TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN)
             return conn
         except Exception as e:
-            # En cas d'échec de connexion Turso, alerte visuelle dans l'UI
-            st.session_state["db_warning"] = f"Échec de connexion à Turso : {str(e)}"
+            st.session_state["db_warning"] = f"Échec de connexion à Turso : {str(e)}. Mode local temporaire actif."
             return sqlite3.connect("local_trade_radar.db")
     else:
-        st.session_state["db_warning"] = "Mode local éphémère (Secrets Turso non configurés). Les données seront perdues au redémarrage."
+        st.session_state["db_warning"] = "Mode local éphémère (Secrets TURSO_DATABASE_URL / TURSO_AUTH_TOKEN non trouvés)."
         return sqlite3.connect("local_trade_radar.db")
 
 def init_db():
@@ -71,13 +70,14 @@ def init_db():
         conn.commit()
         conn.close()
     except Exception as e:
-        st.session_state["db_warning"] = f"Erreur critique DB : {str(e)}"
+        st.session_state["db_warning"] = f"Erreur d'initialisation BDD : {str(e)}"
 
 init_db()
 
-# --- ALERTE CONNEXION BDD ---
+# Affichage de l'alerte de persistance le cas échéant
 if st.session_state.get("db_warning"):
-    st.error(f"⚠️ **Attention Persistance :** {st.session_state['db_warning']}")
+    st.error(f"⚠️ **Alerte Persistance :** {st.session_state['db_warning']}")
+
 
 
 def load_persisted_state():
