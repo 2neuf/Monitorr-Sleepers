@@ -315,11 +315,9 @@ def get_league_format_badge(roster_positions, league_settings):
     
     qb_icon = "⚡" if is_sf else "🎯"
     type_icon = "🏰" if is_dynasty else "🔄"
+   
     
-    qb_label = "SF" if is_sf else "1QB"
-    type_label = "Dynasty" if is_dynasty else "Redraft"
-    
-    return f"{qb_icon}{type_icon} {qb_label} {type_label}"
+    return f"{qb_icon}{type_icon}"
 
 
 def calculate_pick_rank_and_label(season, rd, orig_id, my_roster_id, roster_to_slot, total_teams, orig_pseudo, current_year):
