@@ -271,6 +271,35 @@ def fetch_league_traded_picks(league_id):
     res = requests.get(url)
     return res.json() if res.status_code == 200 else []
 
+def get_adjusted_player_rank(p_info, is_superflex=True, is_dynasty=True):
+    """
+    Ajuste l'ADP Redraft 1QB brut de Sleeper pour refléter la vraie valeur 
+    en Dynasty et selon le format de la ligue (Superflex vs 1QB).
+    """
+    raw_rank = p_info.get("search_rank") or 9999
+    pos = p_info.get("position")
+    age = p_info.get("age", 25)
+
+    # 1. Ajustement selon le poste et le format QB/Superflex
+    if pos == "QB":
+        if is_superflex:
+            # En SF, les QB montent fortement (Top QBs glissent dans le top 15-30)
+            raw_rank = max(1, int(raw_rank * 0.35))
+        else:
+            # En 1QB, la valeur des QB s'effondre
+            raw_rank = int(raw_rank * 1.5)
+    elif pos == "TE":
+        raw_rank = int(raw_rank * 0.9)
+
+    # 2. Ajustement Dynasty (Jeunesse vs Vétérans)
+    if is_dynasty:
+        if age <= 23:
+            raw_rank = int(raw_rank * 0.85)  # Boost jeunes talents
+        elif age >= 29 and pos in ["RB", "WR"]:
+            raw_rank = int(raw_rank * 1.30)  # Décote vétérans
+
+    return raw_rank
+
 def get_asset_value(rank):
     """Calcul exponentiel de la valeur de trade basée sur le rang ADP."""
     if not rank or rank >= 9000:
@@ -336,7 +365,7 @@ def parse_roster_requirements(roster_positions):
 def is_pure_upgrade(my_group_a_roster, target_player, reqs):
     """
     Simule le lineup titulaire avec uniquement les joueurs du Groupe A.
-    Retourne True si la cible apporte une réelle plus-value (comble un trou ou upgrade un starter).
+    Retourne True si la cible apporte une réelle plus-value.
     """
     t_pos = target_player.get("target_pos")
     
@@ -419,7 +448,6 @@ def passes_trade_urgent_no_flex(target_player, user_roster, reqs):
     cutoff_rank = cutoff_starter.get("search_rank", 9999)
     target_rank = target_player.get("target_rank", 9999)
     
-    # Seuil d'amélioration sur l'ADP Rank (Saut minimum de places de rang)
     if pos == "QB" and not is_sf:
         min_rank_diff = 25
     elif pos == "QB" and is_sf:
@@ -428,6 +456,7 @@ def passes_trade_urgent_no_flex(target_player, user_roster, reqs):
         min_rank_diff = 15
         
     return target_rank <= (cutoff_rank - min_rank_diff)
+
 
 # --- FONCTION PRINCIPALE DE CALCUL ET CACHE ---
 @st.cache_data(ttl=600)
