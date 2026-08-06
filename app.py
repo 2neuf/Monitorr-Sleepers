@@ -307,6 +307,21 @@ def get_asset_value(rank):
     val = 10000 * math.exp(-0.018 * (rank - 1))
     return max(int(val), 50)
 
+def get_league_format_badge(roster_positions, league_settings):
+    """Génère le badge émoji selon la composition et le type de ligue (ex: ⚡🏰 SF Dynasty)."""
+    roster_pos = roster_positions or []
+    is_sf = "SUPER_FLEX" in roster_pos or roster_pos.count("QB") >= 2
+    is_dynasty = league_settings.get("type") != 0  # 0 = Redraft sur Sleeper
+    
+    qb_icon = "⚡" if is_sf else "🎯"
+    type_icon = "🏰" if is_dynasty else "🔄"
+    
+    qb_label = "SF" if is_sf else "1QB"
+    type_label = "Dynasty" if is_dynasty else "Redraft"
+    
+    return f"{qb_icon}{type_icon} {qb_label} {type_label}"
+
+
 def calculate_pick_rank_and_label(season, rd, orig_id, my_roster_id, roster_to_slot, total_teams, orig_pseudo, current_year):
     is_current = (season == current_year)
     slot = roster_to_slot.get(orig_id)
@@ -731,6 +746,12 @@ if df_rosters is None:
     st.warning("Aucun roster trouvé pour cet utilisateur/saison.")
     st.stop()
 
+# Map pour retrouver les badges de chaque ligue
+league_badge_map = {
+    l["name"]: get_league_format_badge(l.get("roster_positions"), l.get("settings", {}))
+    for l in leagues
+} if leagues else {}
+
 valid_b_players = group_b[group_b["search_rank"] <= rank_threshold_b]
 leagues_with_valid_b = set()
 for _, row in valid_b_players.iterrows():
@@ -745,6 +766,7 @@ with st.sidebar.expander("🏟️ Exclure des Ligues (Radar)", expanded=False):
         "Ligues masquées dans le Radar :",
         options=all_league_names,
         default=default_excluded_leagues,
+        format_func=lambda name: f"{name} ({league_badge_map.get(name, '')})",
         help="Ligues pré-exclues automatiquement par manque d'assets solides en Groupe B."
     )
 
@@ -797,7 +819,8 @@ with tab1:
             for l_name in row["leagues"]:
                 is_pending = (row["player_name"], l_name) in pending_target_pairs or (row["player_name"], l_name) in pending_offered_pairs
                 tag = " :gray[⏳ (Trade en cours)]" if is_pending else ""
-                st.markdown(f"• {l_name}{tag}")
+                badge_str = f" `{league_badge_map.get(l_name, '')}`" if l_name in league_badge_map else ""
+                st.markdown(f"• {l_name}{badge_str}{tag}")
 
 with tab2:
     st.subheader(f"Joueurs secondaires (< {threshold_group_a} parts) — Triés par ADP")
@@ -814,7 +837,8 @@ with tab2:
             for l_name in row["leagues"]:
                 is_pending = (row["player_name"], l_name) in pending_target_pairs or (row["player_name"], l_name) in pending_offered_pairs
                 tag = " :gray[⏳ (Trade en cours)]" if is_pending else ""
-                st.markdown(f"• {l_name}{tag}")
+                badge_str = f" `{league_badge_map.get(l_name, '')}`" if l_name in league_badge_map else ""
+                st.markdown(f"• {l_name}{badge_str}{tag}")
 
 # ONGLET 3 : RADAR DE TRADE
 with tab3:
@@ -840,7 +864,8 @@ with tab3:
             st.markdown('<h4 style="color: #c53030; margin-top: 0; margin-bottom: 15px;">📌 Trades en Cours Épinglés</h4>', unsafe_allow_html=True)
 
             for p_idx, p_trade in enumerate(pending_trades):
-                with st.expander(f"⏳ **{p_trade['target_full']}** | Ligue : *{p_trade['league']}* | Owner : **@{p_trade['owner']}**", expanded=True):
+                badge_str = f" `[{league_badge_map.get(p_trade['league'], '')}]`" if p_trade['league'] in league_badge_map else ""
+                with st.expander(f"⏳ **{p_trade['target_full']}** | Ligue : *{p_trade['league']}*{badge_str} | Owner : **@{p_trade['owner']}**", expanded=True):
                     col_st, col_dt = st.columns([1, 2])
                     with col_st:
                         status_options = [
@@ -904,7 +929,6 @@ with tab3:
             if (o["target_name"], l_name) in pending_target_pairs:
                 continue
 
-            # Contrôle ultra-rapide via les valeurs pré-calculées
             if filter_upgrade_pure and not o.get("is_pure_upgrade", True):
                 continue
             if filter_trade_urgent and not o.get("is_trade_urgent", True):
@@ -919,7 +943,12 @@ with tab3:
         all_positions = ["Tous", "QB", "RB", "WR", "TE"]
 
         with col_f1:
-            selected_league = st.selectbox("Filtrer par ligue", all_leagues, key="trade_league_filter")
+            selected_league = st.selectbox(
+                "Filtrer par ligue", 
+                all_leagues, 
+                format_func=lambda name: f"{name} ({league_badge_map.get(name, '')})" if name != "Toutes" else "Toutes",
+                key="trade_league_filter"
+            )
         with col_f2:
             selected_pos = st.selectbox("Filtrer par poste ciblé", all_positions, key="trade_pos_filter")
 
@@ -948,7 +977,10 @@ with tab3:
 
             with st.expander(player_header):
                 if len(opps_list) > 1:
-                    league_options = [f"🏟️ {o['league_name']} (@{o['owner_pseudo']})" for o in opps_list]
+                    league_options = [
+                        f"{o['league_name']} | @{o['owner_pseudo']} ({league_badge_map.get(o['league_name'], '')})" 
+                        for o in opps_list
+                    ]
                     selected_league_label = st.selectbox(
                         "Choisir la ligue :",
                         options=league_options,
@@ -957,7 +989,8 @@ with tab3:
                     selected_idx = league_options.index(selected_league_label)
                 else:
                     selected_idx = 0
-                    st.caption(f"🏟️ Ligue : **{first_opp['league_name']}** | Owner : **@{first_opp['owner_pseudo']}**")
+                    l_badge = league_badge_map.get(first_opp['league_name'], '')
+                    st.caption(f"🏟️ Ligue : **{first_opp['league_name']}** (`{l_badge}`) | Owner : **@{first_opp['owner_pseudo']}**")
 
                 opp = opps_list[selected_idx]
 
@@ -1061,10 +1094,4 @@ with tab3:
 
         if st.session_state["trade_history"]:
             st.markdown("---")
-            if st.button("🗑️ Effacer l'ensemble de l'historique"):
-                st.session_state["trade_history"] = []
-                delete_all_trades_db()
-                st.rerun()
-
-    else:
-        st.info("Aucune opportunité directe trouvée.")
+            if st.button("🗑️ Effacer l'ensemble de
