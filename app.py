@@ -1092,6 +1092,12 @@ with tab3:
                     st.info(f"💡 **Valeur estimée de la cible :** {target_val:,} pts. Sélectionne tes assets pour calculer l'équilibre.")
                     st.button("📌 Enregistrer cette proposition", key=key_btn, disabled=True)
 
-        if st.session_state["trade_history"]:
+         if st.session_state["trade_history"]:
             st.markdown("---")
-            if st.button("🗑️ Effacer l'ensemble de
+            if st.button("🗑️ Effacer l'ensemble de l'historique"):
+                st.session_state["trade_history"] = []
+                delete_all_trades_db()
+                st.rerun()
+
+    else:
+        st.info("Aucune opportunité directe trouvée."
