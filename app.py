@@ -240,7 +240,6 @@ def get_adjusted_player_rank(p_info, is_superflex=True, is_dynasty=True):
     raw_rank = p_info.get("search_rank") or 9999
     pos = p_info.get("position")
     
-    # Sécurisation si l'âge est None ou absent
     age = p_info.get("age")
     if age is None:
         age = 25
@@ -260,7 +259,6 @@ def get_adjusted_player_rank(p_info, is_superflex=True, is_dynasty=True):
             raw_rank = int(raw_rank * 1.30)
 
     return raw_rank
-
 
 
 def get_asset_value(rank):
@@ -309,6 +307,7 @@ def save_trade_callback(select_key, trade_entry):
     add_trade_to_db(trade_entry)
     st.session_state[select_key] = []
     st.toast("Proposition enregistrée avec succès !", icon="📌")
+
 
 # --- APPELS API SLEEPER ---
 @st.cache_data(ttl=86400)
@@ -436,12 +435,30 @@ def is_pure_upgrade(my_group_a_roster, target_player, reqs):
 
     return False
 
-def passes_trade_urgent_no_flex(target_player, user_roster, reqs):
-    """Évalue la cible par rapport au pire titulaire STRICT de son poste."""
+def passes_trade_urgent_no_flex(target_player, user_roster, reqs, group_a_ids_set=None):
+    """
+    Filtre Trade Urgent (Sans FLEX) : Évalue la cible par rapport
+    au pire titulaire STRICT de son poste dans le lineup.
+    
+    RÈGLE SPÉCIALE SUPERFLEX : Si l'utilisateur possède déjà au moins 2 QB
+    du Groupe A dans cette ligue, les opportunités QB sont bloquées.
+    """
     pos = target_player.get("target_pos")
     if pos not in ["QB", "RB", "WR", "TE"]:
         return True
-        
+
+    is_sf = reqs.get("SUPER_FLEX", 0) > 0 or reqs.get("QB", 0) >= 2
+
+    # --- Règle spécifique Superflex & QB ---
+    if pos == "QB" and is_sf and group_a_ids_set:
+        group_a_qbs_count = sum(
+            1 for p in user_roster 
+            if p.get("position") == "QB" and p.get("player_id") in group_a_ids_set
+        )
+        if group_a_qbs_count >= 2:
+            return False
+
+    # --- Évaluation classique sur les titulaires stricts ---
     roster_pos = [p for p in user_roster if p.get("position") == pos]
     strict_slots_count = reqs.get(pos, 1)
     if strict_slots_count == 0:
@@ -449,14 +466,12 @@ def passes_trade_urgent_no_flex(target_player, user_roster, reqs):
         
     if len(roster_pos) < strict_slots_count:
         return True
-        
-    is_sf = reqs.get("SUPER_FLEX", 0) > 0 or reqs.get("QB", 0) >= 2
-    
+
     sorted_roster = sorted(roster_pos, key=lambda x: x.get("search_rank", 9999))
     cutoff_starter = sorted_roster[strict_slots_count - 1]
     cutoff_rank = cutoff_starter.get("search_rank", 9999)
     target_rank = target_player.get("target_rank", 9999)
-    
+
     min_rank_diff = 15 if not (pos == "QB" and not is_sf) else 25
     return target_rank <= (cutoff_rank - min_rank_diff)
 
@@ -558,11 +573,13 @@ def compute_all_data_and_opportunities(
             group_a_roster_by_league[l_name] = []
             
         full_roster_by_league[l_name].append({
+            "player_id": r_row["player_id"],
             "position": r_row["position"],
             "search_rank": r_row["search_rank"]
         })
         if r_row["player_id"] in group_a_ids:
             group_a_roster_by_league[l_name].append({
+                "player_id": r_row["player_id"],
                 "position": r_row["position"],
                 "search_rank": r_row["search_rank"]
             })
@@ -666,7 +683,12 @@ def compute_all_data_and_opportunities(
                             "b_options": final_b_options,
                             "b_names_map": final_b_names_map,
                             "is_pure_upgrade": is_pure_upgrade(my_g_a, {"target_pos": t_pos, "target_rank": t_rank}, reqs),
-                            "is_trade_urgent": passes_trade_urgent_no_flex({"target_pos": t_pos, "target_rank": t_rank}, my_full, reqs)
+                            "is_trade_urgent": passes_trade_urgent_no_flex(
+                                {"target_pos": t_pos, "target_rank": t_rank}, 
+                                my_full, 
+                                reqs, 
+                                group_a_ids_set=group_a_ids
+                            )
                         }
 
                         target_opportunities.append(target_obj)
@@ -698,7 +720,7 @@ filter_upgrade_pure = st.sidebar.toggle(
 filter_trade_urgent = st.sidebar.toggle(
     "🚨 Filtre Trade Urgent (No Flex)",
     value=False,
-    help="Masque les opportunités si la cible n'apporte pas un vrai gain direct sur tes titulaires stricts."
+    help="Masque les opportunités si la cible n'apporte pas un vrai gain direct sur tes titulaires stricts (ou si tu as déjà 2+ QBs du Groupe A en Superflex)."
 )
 
 rank_threshold_b = st.sidebar.number_input(
@@ -749,7 +771,7 @@ default_excluded_leagues = [lname for lname in all_league_names if lname not in 
 if "excluded_leagues" not in st.session_state:
     st.session_state["excluded_leagues"] = set(default_excluded_leagues)
 
-# EXPANDER EXCLUSION LIGUES
+# EXPANDER EXCLUSION LIGUES (Nouveau Selectbox + Liste de suppression)
 with st.sidebar.expander("🏟️ Exclure des Ligues (Radar)", expanded=False):
     available_to_exclude = [l for l in all_league_names if l not in st.session_state["excluded_leagues"]]
     
@@ -805,7 +827,6 @@ with st.sidebar.expander("🚫 Gestion Blacklist", expanded=False):
                 st.rerun()
     else:
         st.write(":gray[Aucune cible bloquée.]")
-
 
 pending_trades = [t for t in st.session_state["trade_history"] if t["status"] == "En cours"]
 pending_target_pairs = set((t["target_name"], t["league"]) for t in pending_trades)
