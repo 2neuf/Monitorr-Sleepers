@@ -218,7 +218,94 @@ if st.session_state.get("db_warning"):
     st.error(f"⚠️ **Alerte BDD Turso :** {st.session_state['db_warning']}")
 
 
-# --- APPELS API SLEEPER & VALORISATION ---
+# --- HELPERS BADGES & ADAPTATION DES RANKS ---
+
+def get_league_format_badge(roster_positions, league_settings):
+    """Génère le badge émoji selon le format (ex: ⚡🏰 SF Dynasty)."""
+    roster_pos = roster_positions or []
+    is_sf = "SUPER_FLEX" in roster_pos or roster_pos.count("QB") >= 2
+    is_dynasty = league_settings.get("type") != 0  # 0 = Redraft sur Sleeper
+    
+    qb_icon = "⚡" if is_sf else "🎯"
+    type_icon = "🏰" if is_dynasty else "🔄"
+    
+    qb_label = "SF" if is_sf else "1QB"
+    type_label = "Dynasty" if is_dynasty else "Redraft"
+    
+    return f"{qb_icon}{type_icon} {qb_label} {type_label}"
+
+
+def get_adjusted_player_rank(p_info, is_superflex=True, is_dynasty=True):
+    """Ajuste l'ADP Redraft 1QB brut de Sleeper pour refléter la valeur SF/Dynasty."""
+    raw_rank = p_info.get("search_rank") or 9999
+    pos = p_info.get("position")
+    age = p_info.get("age", 25)
+
+    if pos == "QB":
+        if is_superflex:
+            raw_rank = max(1, int(raw_rank * 0.35))
+        else:
+            raw_rank = int(raw_rank * 1.5)
+    elif pos == "TE":
+        raw_rank = int(raw_rank * 0.9)
+
+    if is_dynasty:
+        if age <= 23:
+            raw_rank = int(raw_rank * 0.85)
+        elif age >= 29 and pos in ["RB", "WR"]:
+            raw_rank = int(raw_rank * 1.30)
+
+    return raw_rank
+
+
+def get_asset_value(rank):
+    """Calcul exponentiel de la valeur de trade basée sur le rang ADP."""
+    if not rank or rank >= 9000:
+        return 100
+    val = 10000 * math.exp(-0.018 * (rank - 1))
+    return max(int(val), 50)
+
+
+def calculate_pick_rank_and_label(season, rd, orig_id, my_roster_id, roster_to_slot, total_teams, orig_pseudo, current_year):
+    is_current = (season == current_year)
+    slot = roster_to_slot.get(orig_id)
+
+    if is_current and slot is not None:
+        estimated_pick_pos = slot
+        tier_label = f"Pick {season} #{rd}.{slot:02d}"
+    else:
+        if orig_id == my_roster_id:
+            estimated_pick_pos = max(1, int(total_teams * 0.75))
+            tier_label = f"Pick {season} Mid/Late {rd}st" if rd == 1 else f"Pick {season} Mid/Late {rd}nd"
+        else:
+            estimated_pick_pos = max(1, int(total_teams * 0.35))
+            tier_label = f"Pick {season} Early/Mid {rd}st" if rd == 1 else f"Pick {season} Early/Mid {rd}nd"
+
+    if rd == 1:
+        base_rank = 15
+    elif rd == 2:
+        base_rank = 45
+    elif rd == 3:
+        base_rank = 75
+    else:
+        base_rank = 110
+
+    rank_val = base_rank + (estimated_pick_pos - 1) * 2
+    if not is_current:
+        rank_val += 12
+
+    label = f"🎟️ {tier_label} (@{orig_pseudo}) [Rank #{rank_val}]"
+    pick_name = f"Pick {season} Rd {rd} (@{orig_pseudo})"
+    return rank_val, label, pick_name
+
+
+def save_trade_callback(select_key, trade_entry):
+    st.session_state["trade_history"].append(trade_entry)
+    add_trade_to_db(trade_entry)
+    st.session_state[select_key] = []
+    st.toast("Proposition enregistrée avec succès !", icon="📌")
+
+# --- APPELS API SLEEPER ---
 @st.cache_data(ttl=86400)
 def load_sleeper_players():
     url = "https://api.sleeper.app/v1/players/nfl"
@@ -271,93 +358,6 @@ def fetch_league_traded_picks(league_id):
     res = requests.get(url)
     return res.json() if res.status_code == 200 else []
 
-def get_adjusted_player_rank(p_info, is_superflex=True, is_dynasty=True):
-    """
-    Ajuste l'ADP Redraft 1QB brut de Sleeper pour refléter la vraie valeur 
-    en Dynasty et selon le format de la ligue (Superflex vs 1QB).
-    """
-    raw_rank = p_info.get("search_rank") or 9999
-    pos = p_info.get("position")
-    age = p_info.get("age", 25)
-
-    # 1. Ajustement selon le poste et le format QB/Superflex
-    if pos == "QB":
-        if is_superflex:
-            # En SF, les QB montent fortement (Top QBs glissent dans le top 15-30)
-            raw_rank = max(1, int(raw_rank * 0.35))
-        else:
-            # En 1QB, la valeur des QB s'effondre
-            raw_rank = int(raw_rank * 1.5)
-    elif pos == "TE":
-        raw_rank = int(raw_rank * 0.9)
-
-    # 2. Ajustement Dynasty (Jeunesse vs Vétérans)
-    if is_dynasty:
-        if age <= 23:
-            raw_rank = int(raw_rank * 0.85)  # Boost jeunes talents
-        elif age >= 29 and pos in ["RB", "WR"]:
-            raw_rank = int(raw_rank * 1.30)  # Décote vétérans
-
-    return raw_rank
-
-def get_asset_value(rank):
-    """Calcul exponentiel de la valeur de trade basée sur le rang ADP."""
-    if not rank or rank >= 9000:
-        return 100
-    val = 10000 * math.exp(-0.018 * (rank - 1))
-    return max(int(val), 50)
-
-def get_league_format_badge(roster_positions, league_settings):
-    """Génère le badge émoji selon la composition et le type de ligue (ex: ⚡🏰 SF Dynasty)."""
-    roster_pos = roster_positions or []
-    is_sf = "SUPER_FLEX" in roster_pos or roster_pos.count("QB") >= 2
-    is_dynasty = league_settings.get("type") != 0  # 0 = Redraft sur Sleeper
-    
-    qb_icon = "⚡" if is_sf else "🎯"
-    type_icon = "🏰" if is_dynasty else "🔄"
-   
-    
-    return f"{qb_icon}{type_icon}"
-
-
-def calculate_pick_rank_and_label(season, rd, orig_id, my_roster_id, roster_to_slot, total_teams, orig_pseudo, current_year):
-    is_current = (season == current_year)
-    slot = roster_to_slot.get(orig_id)
-
-    if is_current and slot is not None:
-        estimated_pick_pos = slot
-        tier_label = f"Pick {season} #{rd}.{slot:02d}"
-    else:
-        if orig_id == my_roster_id:
-            estimated_pick_pos = max(1, int(total_teams * 0.75))
-            tier_label = f"Pick {season} Mid/Late {rd}st" if rd == 1 else f"Pick {season} Mid/Late {rd}nd"
-        else:
-            estimated_pick_pos = max(1, int(total_teams * 0.35))
-            tier_label = f"Pick {season} Early/Mid {rd}st" if rd == 1 else f"Pick {season} Early/Mid {rd}nd"
-
-    if rd == 1:
-        base_rank = 15
-    elif rd == 2:
-        base_rank = 45
-    elif rd == 3:
-        base_rank = 75
-    else:
-        base_rank = 110
-
-    rank_val = base_rank + (estimated_pick_pos - 1) * 2
-    if not is_current:
-        rank_val += 12
-
-    label = f"🎟️ {tier_label} (@{orig_pseudo}) [Rank #{rank_val}]"
-    pick_name = f"Pick {season} Rd {rd} (@{orig_pseudo})"
-    return rank_val, label, pick_name
-
-def save_trade_callback(select_key, trade_entry):
-    st.session_state["trade_history"].append(trade_entry)
-    add_trade_to_db(trade_entry)
-    st.session_state[select_key] = []
-    st.toast("Proposition enregistrée avec succès !", icon="📌")
-
 
 # --- FONCTIONS DE FILTRAGE DES CANDIDATS ---
 
@@ -376,17 +376,12 @@ def parse_roster_requirements(roster_positions):
     return counts
 
 def is_pure_upgrade(my_group_a_roster, target_player, reqs):
-    """
-    Simule le lineup titulaire avec uniquement les joueurs du Groupe A.
-    Retourne True si la cible apporte une réelle plus-value.
-    """
+    """Simule le lineup titulaire avec uniquement les joueurs du Groupe A."""
     t_pos = target_player.get("target_pos")
-    
     if t_pos not in ["QB", "RB", "WR", "TE"]:
         return True
 
     t_rank = target_player.get("target_rank", 9999)
-
     my_by_pos = {"QB": [], "RB": [], "WR": [], "TE": []}
     for p in my_group_a_roster:
         pos = p.get("position")
@@ -401,7 +396,6 @@ def is_pure_upgrade(my_group_a_roster, target_player, reqs):
     
     if len(current_strict) < needed_strict:
         return True
-        
     if current_strict and t_rank < (current_strict[-1] - 15):
         return True
 
@@ -438,10 +432,7 @@ def is_pure_upgrade(my_group_a_roster, target_player, reqs):
     return False
 
 def passes_trade_urgent_no_flex(target_player, user_roster, reqs):
-    """
-    Filtre Trade Urgent (Sans FLEX) : Évalue la cible par rapport
-    au pire titulaire STRICT de son poste dans le lineup.
-    """
+    """Évalue la cible par rapport au pire titulaire STRICT de son poste."""
     pos = target_player.get("target_pos")
     if pos not in ["QB", "RB", "WR", "TE"]:
         return True
@@ -461,13 +452,7 @@ def passes_trade_urgent_no_flex(target_player, user_roster, reqs):
     cutoff_rank = cutoff_starter.get("search_rank", 9999)
     target_rank = target_player.get("target_rank", 9999)
     
-    if pos == "QB" and not is_sf:
-        min_rank_diff = 25
-    elif pos == "QB" and is_sf:
-        min_rank_diff = 15
-    else:
-        min_rank_diff = 15
-        
+    min_rank_diff = 15 if not (pos == "QB" and not is_sf) else 25
     return target_rank <= (cutoff_rank - min_rank_diff)
 
 
@@ -483,20 +468,10 @@ def compute_all_data_and_opportunities(
         return None, None, None, [], [], {}, {}
 
     league_name_to_id = {l["name"]: l["league_id"] for l in leagues}
-    league_size_map = {
-        league["name"]: len(league.get("roster_positions") or [])
-        for league in leagues
-    }
-    league_reqs_map = {
-        league["name"]: parse_roster_requirements(league.get("roster_positions"))
-        for league in leagues
-    }
+    league_size_map = {league["name"]: len(league.get("roster_positions") or []) for league in leagues}
+    league_reqs_map = {league["name"]: parse_roster_requirements(league.get("roster_positions")) for league in leagues}
 
-    name_to_player_id = {}
-    for p_id, p_info in all_players.items():
-        fname = p_info.get("full_name")
-        if fname:
-            name_to_player_id[fname] = p_id
+    name_to_player_id = {p_info.get("full_name"): p_id for p_id, p_info in all_players.items() if p_info.get("full_name")}
 
     user_rosters = []
     user_roster_ids = {}
@@ -569,7 +544,6 @@ def compute_all_data_and_opportunities(
     group_a_ids = set(group_a["player_id"])
     group_b_ids = set(group_b["player_id"])
 
-    # Pré-calcul des rosters par ligue pour les filtres
     group_a_roster_by_league = {}
     full_roster_by_league = {}
     for _, r_row in df_rosters.iterrows():
@@ -594,6 +568,10 @@ def compute_all_data_and_opportunities(
         l_id = league["league_id"]
         l_name = league["name"]
         my_roster_id = user_roster_ids.get(l_id)
+
+        roster_pos_list = league.get("roster_positions") or []
+        is_sf = "SUPER_FLEX" in roster_pos_list or roster_pos_list.count("QB") >= 2
+        is_dynasty = league.get("settings", {}).get("type") != 0
 
         my_b_in_league = df_rosters[(df_rosters["league_id"] == l_id) & (df_rosters["player_id"].isin(group_b_ids))].copy()
 
@@ -633,12 +611,13 @@ def compute_all_data_and_opportunities(
                 elif tp_owner == my_roster_id:
                     owned_picks.add((tp_season, tp_round, tp_orig))
 
-        b_sorted = my_b_in_league.sort_values(by="search_rank", ascending=True)
         b_options_list = []
 
-        for _, row in b_sorted.iterrows():
-            label = f"🏃 {row['player_name']} ({row['position']} - {row['team']}) [Rank #{row['search_rank']}]"
-            b_options_list.append((row["search_rank"], label, row["player_name"]))
+        for _, row in my_b_in_league.iterrows():
+            p_info = all_players.get(str(row["player_id"]), {})
+            adj_rank = get_adjusted_player_rank(p_info, is_superflex=is_sf, is_dynasty=is_dynasty)
+            label = f"🏃 {row['player_name']} ({row['position']} - {row['team']}) [Rank #{adj_rank}]"
+            b_options_list.append((adj_rank, label, row["player_name"]))
 
         for season, rd, orig_id in owned_picks:
             orig_pseudo = roster_id_to_pseudo.get(orig_id, f"#{orig_id}")
@@ -665,8 +644,12 @@ def compute_all_data_and_opportunities(
                     owner_pseudo = league_users.get(r.get("owner_id"), "Propriétaire Inconnu")
 
                     for target_id in targets_held:
-                        t_name, t_pos, t_team, t_rank = _get_info(target_id)
-                        
+                        p_info = all_players.get(str(target_id), {})
+                        t_name = p_info.get("full_name", f"Joueur inconnu ({target_id})")
+                        t_pos = p_info.get("position", "N/A")
+                        t_team = p_info.get("team", "N/A")
+                        t_rank = get_adjusted_player_rank(p_info, is_superflex=is_sf, is_dynasty=is_dynasty)
+
                         target_obj = {
                             "target_id": target_id,
                             "target_name": t_name,
@@ -677,7 +660,6 @@ def compute_all_data_and_opportunities(
                             "owner_pseudo": owner_pseudo,
                             "b_options": final_b_options,
                             "b_names_map": final_b_names_map,
-                            # Pré-calcul des drapeaux de filtrage
                             "is_pure_upgrade": is_pure_upgrade(my_g_a, {"target_pos": t_pos, "target_rank": t_rank}, reqs),
                             "is_trade_urgent": passes_trade_urgent_no_flex({"target_pos": t_pos, "target_rank": t_rank}, my_full, reqs)
                         }
@@ -758,15 +740,39 @@ for _, row in valid_b_players.iterrows():
 all_league_names = sorted([l["name"] for l in leagues]) if leagues else []
 default_excluded_leagues = [lname for lname in all_league_names if lname not in leagues_with_valid_b]
 
+# Initialisation des ligues exclues dans st.session_state
+if "excluded_leagues" not in st.session_state:
+    st.session_state["excluded_leagues"] = set(default_excluded_leagues)
+
 # EXPANDER EXCLUSION LIGUES
 with st.sidebar.expander("🏟️ Exclure des Ligues (Radar)", expanded=False):
-    excluded_leagues_input = st.multiselect(
-        "Ligues masquées dans le Radar :",
-        options=all_league_names,
-        default=default_excluded_leagues,
-        format_func=lambda name: f"{name} ({league_badge_map.get(name, '')})",
-        help="Ligues pré-exclues automatiquement par manque d'assets solides en Groupe B."
+    available_to_exclude = [l for l in all_league_names if l not in st.session_state["excluded_leagues"]]
+    
+    selected_to_add = st.selectbox(
+        "Taper ou choisir une ligue à masquer :",
+        options=["-- Sélectionner une ligue --"] + available_to_exclude,
+        key="add_excluded_league_select"
     )
+    
+    if selected_to_add and selected_to_add != "-- Sélectionner une ligue --":
+        st.session_state["excluded_leagues"].add(selected_to_add)
+        st.rerun()
+
+    st.markdown("---")
+    st.caption("🚫 **Ligues actuellement masquées :**")
+    
+    if st.session_state["excluded_leagues"]:
+        for exc_league in sorted(list(st.session_state["excluded_leagues"])):
+            badge = league_badge_map.get(exc_league, '')
+            col_l1, col_l2 = st.columns([4, 1])
+            col_l1.markdown(f"• **{exc_league}**\n  <small>`{badge}`</small>", unsafe_allow_html=True)
+            if col_l2.button("❌", key=f"unexclude_{exc_league}"):
+                st.session_state["excluded_leagues"].remove(exc_league)
+                st.rerun()
+    else:
+        st.write(":gray[Aucune ligue masquée.]")
+
+excluded_leagues_input = st.session_state["excluded_leagues"]
 
 # EXPANDER BLACKLIST
 with st.sidebar.expander("🚫 Gestion Blacklist", expanded=False):
@@ -795,11 +801,12 @@ with st.sidebar.expander("🚫 Gestion Blacklist", expanded=False):
     else:
         st.write(":gray[Aucune cible bloquée.]")
 
+
 pending_trades = [t for t in st.session_state["trade_history"] if t["status"] == "En cours"]
 pending_target_pairs = set((t["target_name"], t["league"]) for t in pending_trades)
 pending_offered_pairs = set((p_name, t["league"]) for t in pending_trades for p_name in t["offered_names"])
 
-# --- NAVIGATION ONGLETS 1 & 2 ---
+# --- NAVIGATION ONGLETS 1, 2 & 3 ---
 tab1, tab2, tab3 = st.tabs(["⭐ Groupe A (Targets)", "🔄 Groupe B (A Trader)", "🎯 Radar de Trade"])
 
 with tab1:
