@@ -239,7 +239,11 @@ def get_adjusted_player_rank(p_info, is_superflex=True, is_dynasty=True):
     """Ajuste l'ADP Redraft 1QB brut de Sleeper pour refléter la valeur SF/Dynasty."""
     raw_rank = p_info.get("search_rank") or 9999
     pos = p_info.get("position")
-    age = p_info.get("age", 25)
+    
+    # Sécurisation si l'âge est None ou absent
+    age = p_info.get("age")
+    if age is None:
+        age = 25
 
     if pos == "QB":
         if is_superflex:
@@ -256,6 +260,7 @@ def get_adjusted_player_rank(p_info, is_superflex=True, is_dynasty=True):
             raw_rank = int(raw_rank * 1.30)
 
     return raw_rank
+
 
 
 def get_asset_value(rank):
