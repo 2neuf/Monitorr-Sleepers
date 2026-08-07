@@ -81,7 +81,7 @@ def execute_turso_query(statements):
 
 
 def init_db():
-    """Crée les tables et migre le schéma vers 11 colonnes."""
+    """Crée les tables et migre le schéma vers 11 colonnes + table excluded_leagues."""
     st.session_state["db_warning"] = None
     if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
         try:
@@ -93,6 +93,9 @@ def init_db():
                 );""", []),
                 ("""CREATE TABLE IF NOT EXISTS blacklist (
                     id TEXT PRIMARY KEY, type TEXT, owner TEXT, target_name TEXT, league TEXT
+                );""", []),
+                ("""CREATE TABLE IF NOT EXISTS excluded_leagues (
+                    league_name TEXT PRIMARY KEY
                 );""", [])
             ])
             try:
@@ -149,6 +152,49 @@ def load_persisted_state():
             st.session_state["db_warning"] = f"Erreur lecture Turso : {str(e)}"
 
     return [], set(), set()
+
+
+def load_excluded_leagues_db():
+    """Charge la liste des ligues masquées depuis Turso."""
+    if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN and not st.session_state.get("db_warning"):
+        try:
+            res = execute_turso_query([("SELECT league_name FROM excluded_leagues;", [])])
+            if res and len(res) > 0:
+                _, rows = res[0]
+                return set(r[0] for r in rows if r)
+        except Exception as e:
+            st.toast(f"Erreur chargement ligues masquées BDD : {e}", icon="⚠️")
+    return set()
+
+
+def add_excluded_league_db(league_name):
+    """Ajoute une ligue masquée dans la BDD Turso."""
+    if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
+        try:
+            execute_turso_query([("INSERT OR REPLACE INTO excluded_leagues (league_name) VALUES (?);", [league_name])])
+        except Exception as e:
+            st.toast(f"Erreur sauvegarde ligue masquée : {e}", icon="⚠️")
+
+
+def remove_excluded_league_db(league_name):
+    """Retire une ligue masquée de la BDD Turso."""
+    if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
+        try:
+            execute_turso_query([("DELETE FROM excluded_leagues WHERE league_name = ?;", [league_name])])
+        except Exception as e:
+            st.toast(f"Erreur retrait ligue masquée : {e}", icon="⚠️")
+
+
+def save_all_excluded_leagues_db(league_set):
+    """Remplace l'ensemble des ligues masquées dans Turso (lors d'un recalcul)."""
+    if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
+        try:
+            statements = [("DELETE FROM excluded_leagues;", [])]
+            for lname in league_set:
+                statements.append(("INSERT INTO excluded_leagues (league_name) VALUES (?);", [lname]))
+            execute_turso_query(statements)
+        except Exception as e:
+            st.toast(f"Erreur mise à jour globale des ligues masquées : {e}", icon="⚠️")
 
 
 def add_trade_to_db(trade):
@@ -309,6 +355,7 @@ def save_trade_callback(select_key, trade_entry):
     st.toast("Proposition enregistrée avec succès !", icon="📌")
 
 
+
 # --- APPELS API SLEEPER ---
 @st.cache_data(ttl=86400)
 def load_sleeper_players():
@@ -437,9 +484,7 @@ def is_pure_upgrade(my_group_a_roster, target_player, reqs):
 
 def passes_trade_urgent_no_flex(target_player, user_roster, reqs, group_a_ids_set=None):
     """
-    Filtre Trade Urgent (Sans FLEX) : Évalue la cible par rapport
-    au pire titulaire STRICT de son poste dans le lineup.
-    
+    Filtre Trade Urgent (Sans FLEX) : Évalue la cible par rapport au pire titulaire STRICT.
     RÈGLE SPÉCIALE SUPERFLEX : Si l'utilisateur possède déjà au moins 2 QB
     du Groupe A dans cette ligue, les opportunités QB sont bloquées.
     """
@@ -449,7 +494,6 @@ def passes_trade_urgent_no_flex(target_player, user_roster, reqs, group_a_ids_se
 
     is_sf = reqs.get("SUPER_FLEX", 0) > 0 or reqs.get("QB", 0) >= 2
 
-    # --- Règle spécifique Superflex & QB ---
     if pos == "QB" and is_sf and group_a_ids_set:
         group_a_qbs_count = sum(
             1 for p in user_roster 
@@ -458,7 +502,6 @@ def passes_trade_urgent_no_flex(target_player, user_roster, reqs, group_a_ids_se
         if group_a_qbs_count >= 2:
             return False
 
-    # --- Évaluation classique sur les titulaires stricts ---
     roster_pos = [p for p in user_roster if p.get("position") == pos]
     strict_slots_count = reqs.get(pos, 1)
     if strict_slots_count == 0:
@@ -726,7 +769,7 @@ filter_trade_urgent = st.sidebar.toggle(
 rank_threshold_b = st.sidebar.number_input(
     "Rank ADP max. asset Groupe B",
     min_value=10, max_value=300, value=100, step=10,
-    help="Exclut par défaut les ligues n'ayant aucun JOUEUR du Groupe B sous ce rang ADP."
+    help="Utilisé lors du recalcul manuel pour masquer les ligues sans bon joueur du Groupe B."
 )
 
 accepted_trades = [t for t in st.session_state["trade_history"] if t["status"] == "Accepté"]
@@ -759,20 +802,15 @@ league_badge_map = {
     for l in leagues
 } if leagues else {}
 
-valid_b_players = group_b[group_b["search_rank"] <= rank_threshold_b]
-leagues_with_valid_b = set()
-for _, row in valid_b_players.iterrows():
-    leagues_with_valid_b.update(row["leagues"])
-
 all_league_names = sorted([l["name"] for l in leagues]) if leagues else []
-default_excluded_leagues = [lname for lname in all_league_names if lname not in leagues_with_valid_b]
 
-# Initialisation des ligues exclues dans st.session_state
+# INITIALISATION DEPUIS LA BDD TURSO DES LIGUES MASQUÉES
 if "excluded_leagues" not in st.session_state:
-    st.session_state["excluded_leagues"] = set(default_excluded_leagues)
+    st.session_state["excluded_leagues"] = load_excluded_leagues_db()
 
-# EXPANDER EXCLUSION LIGUES (Nouveau Selectbox + Liste de suppression)
+# EXPANDER EXCLUSION LIGUES PERSISTÉ
 with st.sidebar.expander("🏟️ Exclure des Ligues (Radar)", expanded=False):
+    # 1. Menu déroulant pour masquer manuellement une ligue
     available_to_exclude = [l for l in all_league_names if l not in st.session_state["excluded_leagues"]]
     
     selected_to_add = st.selectbox(
@@ -783,11 +821,28 @@ with st.sidebar.expander("🏟️ Exclure des Ligues (Radar)", expanded=False):
     
     if selected_to_add and selected_to_add != "-- Sélectionner une ligue --":
         st.session_state["excluded_leagues"].add(selected_to_add)
+        add_excluded_league_db(selected_to_add)
         st.rerun()
 
     st.markdown("---")
-    st.caption("🚫 **Ligues actuellement masquées :**")
     
+    # 2. Bouton de recalcul manuel automatique basé sur l'ADP
+    if st.button("🔄 Recalculer le masquage automatique", help="Analyse les ligues n'ayant aucun joueur Groupe B sous le rang ADP max et met à jour la BDD Turso."):
+        valid_b_players = group_b[group_b["search_rank"] <= rank_threshold_b]
+        leagues_with_valid_b = set()
+        for _, row in valid_b_players.iterrows():
+            leagues_with_valid_b.update(row["leagues"])
+            
+        auto_excluded = set(lname for lname in all_league_names if lname not in leagues_with_valid_b)
+        st.session_state["excluded_leagues"] = auto_excluded
+        save_all_excluded_leagues_db(auto_excluded)
+        st.toast("Liste des ligues masquées recalculée et sauvegardée en BDD !", icon="✅")
+        st.rerun()
+
+    st.markdown("---")
+    st.caption("🚫 **Ligues actuellement masquées (Persistées) :**")
+    
+    # 3. Liste des ligues masquées avec bouton de suppression
     if st.session_state["excluded_leagues"]:
         for exc_league in sorted(list(st.session_state["excluded_leagues"])):
             badge = league_badge_map.get(exc_league, '')
@@ -795,6 +850,7 @@ with st.sidebar.expander("🏟️ Exclure des Ligues (Radar)", expanded=False):
             col_l1.markdown(f"• **{exc_league}**\n  <small>`{badge}`</small>", unsafe_allow_html=True)
             if col_l2.button("❌", key=f"unexclude_{exc_league}"):
                 st.session_state["excluded_leagues"].remove(exc_league)
+                remove_excluded_league_db(exc_league)
                 st.rerun()
     else:
         st.write(":gray[Aucune ligue masquée.]")
