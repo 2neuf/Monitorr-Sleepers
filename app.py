@@ -1231,18 +1231,18 @@ with tab3:
 # --- ONGLET 4 : WAIVERS (INTELLIGENT) ---
 with tab4:
     st.subheader("📥 Disponibilité des Waivers & Analyse Roster")
-    st.caption("Affiche la disponibilité des joueurs (✅ Libre ou ❌ Pris) uniquement dans les ligues dont la draft est terminée, et indique quel joueur dropper si votre roster est plein.")
+    st.caption("Affiche la disponibilité des joueurs (✅ Libre ou ❌ Pris) uniquement dans les ligues dont la draft est terminée.")
 
     all_players = load_sleeper_players()
 
-    # FILTRE : On conserve les ligues non exclues ET dont la draft est achevée
+    # FILTRE : Ligues non exclues ET dont la draft est terminée
     active_waiver_leagues = [
         l["name"] for l in leagues 
         if l["name"] not in excluded_leagues_input and l["name"] in draft_completed_leagues
     ]
 
     if not active_waiver_leagues:
-        st.warning("Aucune ligue éligible pour les waivers. Soit toutes vos ligues sont masquées, soit les drafts pour la saison à venir ne sont pas encore terminées.")
+        st.warning("Aucune ligue éligible pour les waivers.")
     else:
 
         def get_waiver_status_for_league(p_id, p_pos, l_name):
@@ -1252,14 +1252,12 @@ with tab4:
             if p_id in taken_set:
                 return "❌ Pris"
 
-            # Le joueur est LIBRE : vérification de la taille du roster
             my_roster = user_full_roster_objects.get(l_name, [])
             max_roster_size = league_size_map.get(l_name, 25)
 
             if len(my_roster) < max_roster_size:
                 return "✅ Libre (Place dispo)"
 
-            # Le roster est plein : recherche du joueur du même poste avec le pire rank ADP
             same_pos_players = [p for p in my_roster if p.get("position") == p_pos]
 
             if same_pos_players:
@@ -1269,50 +1267,6 @@ with tab4:
                 worst_global = max(my_roster, key=lambda x: x.get("search_rank", 0))
                 return f"✅ Libre (Drop : {worst_global['player_name']})"
 
-
-        # --- BARRAGE DE FILTRAGE GLOBAL : MULTISELECT JOUEURS ---
-        st.markdown("### 🚫 Masquage multi-joueurs")
-        
-        # Préparation de la liste complète pour l'autocomplétion
-        all_players_options = []
-        player_id_map = {}
-
-        for p_id, p_info in all_players.items():
-            full_name = p_info.get("full_name")
-            pos = p_info.get("position")
-            team = p_info.get("team")
-            if full_name and pos in ["QB", "RB", "WR", "TE", "K", "DEF"]:
-                label = f"{full_name} ({pos} - {team or 'FA'})"
-                all_players_options.append(label)
-                player_id_map[label] = (p_id, pos)
-
-        all_players_options.sort()
-
-        selected_taken_players = st.multiselect(
-            "Sélectionner un ou plusieurs joueurs à cibler (masque les ligues où ils sont DÉJÀ pris) :",
-            options=all_players_options,
-            placeholder="Taper un nom de joueur (ex: Isiah Pacheco, Dontayvion Wicks...)",
-            key="waiver_multiselect_hide_taken"
-        )
-
-        # Calcul des ligues filtrées
-        filtered_waiver_leagues = active_waiver_leagues.copy()
-
-        if selected_taken_players:
-            # Pour chaque joueur sélectionné, on retire les ligues dans lesquelles il est dans taken_set
-            for p_label in selected_taken_players:
-                p_id, _ = player_id_map[p_label]
-                filtered_waiver_leagues = [
-                    l_name for l_name in filtered_waiver_leagues
-                    if p_id not in league_rosters_map.get(l_name, set())
-                ]
-
-            st.info(
-                f"💡 **{len(filtered_waiver_leagues)} / {len(active_waiver_leagues)} ligue(s)** affichée(s) "
-                f"(où **tous** les joueurs sélectionnés ci-dessus sont encore disponibles)."
-            )
-
-        st.markdown("---")
 
         # --- PARTIE 1 : TRENDING PLAYERS ---
         col_w_head, col_w_btn = st.columns([3, 1])
@@ -1326,21 +1280,65 @@ with tab4:
         trending_data = fetch_trending_players(type="add", lookback_hours=24, limit=25)
 
         if trending_data:
-            trending_rows = []
+            # 1. PRÉPARATION DE LA LISTE DES JOUEURS TRENDING (pour la multiselect)
+            trending_players_map = {} # label -> (player_id, position)
             for item in trending_data:
                 p_id = str(item.get("player_id"))
                 p_info = all_players.get(p_id, {})
                 p_name = p_info.get("full_name", f"Joueur #{p_id}")
                 p_pos = p_info.get("position", "N/A")
-                p_team = p_info.get("team", "N/A")
-                adds_count = item.get("count", 0)
+                p_team = p_info.get("team", "FA")
+                
+                label = f"{p_name} ({p_pos} - {p_team})"
+                trending_players_map[label] = {
+                    "id": p_id,
+                    "pos": p_pos,
+                    "count": item.get("count", 0)
+                }
+
+            # 2. SELECTION MULTISELECT (Uniquement les joueurs Trending)
+            selected_trending_labels = st.multiselect(
+                "Filtrer les Trending (masque les autres joueurs et masque les ligues où ils sont DÉJÀ pris) :",
+                options=list(trending_players_map.keys()),
+                placeholder="Sélectionner un ou plusieurs joueurs du Top Trending...",
+                key="waiver_multiselect_trending_only"
+            )
+
+            # 3. CALCUL DES LIGNES ET COLONNES À CONSERVER
+            filtered_waiver_leagues = active_waiver_leagues.copy()
+
+            if selected_trending_labels:
+                # Filtrage des Ligues (Colonnes) : on masque si au moins un joueur sélectionné y est pris
+                for label in selected_trending_labels:
+                    p_id = trending_players_map[label]["id"]
+                    filtered_waiver_leagues = [
+                        l_name for l_name in filtered_waiver_leagues
+                        if p_id not in league_rosters_map.get(l_name, set())
+                    ]
+
+                st.info(
+                    f"💡 **{len(filtered_waiver_leagues)} / {len(active_waiver_leagues)} ligue(s)** disponible(s) "
+                    f"où **tous** les joueurs sélectionnés sont encore LIBRES."
+                )
+
+                # Filtrage des Joueurs (Lignes) : Uniquement ceux sélectionnés
+                display_targets = {label: trending_players_map[label] for label in selected_trending_labels}
+            else:
+                # Si rien n'est sélectionné, on affiche toutes les lignes et toutes les ligues
+                display_targets = trending_players_map
+
+            # 4. CONSTRUCTION DU DATAFRAME TENDANCE
+            trending_rows = []
+            for label, p_data in display_targets.items():
+                p_id = p_data["id"]
+                p_pos = p_data["pos"]
+                adds_count = p_data["count"]
 
                 row_dict = {
-                    "Joueur": f"{p_name} ({p_pos} - {p_team})",
+                    "Joueur": label,
                     "Adds (24h)": f"🔥 +{adds_count}"
                 }
 
-                # On n'affiche QUE les colonnes correspondant aux ligues filtrées
                 for l_name in filtered_waiver_leagues:
                     row_dict[l_name] = get_waiver_status_for_league(p_id, p_pos, l_name)
 
@@ -1348,13 +1346,29 @@ with tab4:
 
             df_trending = pd.DataFrame(trending_rows)
             st.dataframe(df_trending, use_container_width=True, hide_index=True)
+
         else:
             st.info("Impossible de récupérer les joueurs trending pour le moment.")
 
         st.markdown("---")
 
-        # --- PARTIE 2 : RECHERCHE SPÉCIFIQUE ---
+        # --- PARTIE 2 : RECHERCHE SPÉCIFIQUE (Non impactée par le filtre Parte 1) ---
         st.markdown("### 🔍 Partie 2 : Recherche Spécifique de Joueur")
+
+        # Construction de la liste complète des joueurs pour la recherche libre
+        all_players_options = []
+        full_player_id_map = {}
+
+        for p_id, p_info in all_players.items():
+            full_name = p_info.get("full_name")
+            pos = p_info.get("position")
+            team = p_info.get("team")
+            if full_name and pos in ["QB", "RB", "WR", "TE", "K", "DEF"]:
+                label = f"{full_name} ({pos} - {team or 'FA'})"
+                all_players_options.append(label)
+                full_player_id_map[label] = (p_id, pos)
+
+        all_players_options.sort()
 
         selected_search_label = st.selectbox(
             "Rechercher un joueur spécifique à ajouter :",
@@ -1363,14 +1377,15 @@ with tab4:
         )
 
         if selected_search_label and selected_search_label != "-- Taper pour chercher un joueur --":
-            searched_p_id, searched_p_pos = player_id_map.get(selected_search_label)
+            searched_p_id, searched_p_pos = full_player_id_map.get(selected_search_label)
             
             search_rows = []
             row_dict = {"Joueur": selected_search_label}
 
-            for l_name in filtered_waiver_leagues:
+            for l_name in active_waiver_leagues:
                 row_dict[l_name] = get_waiver_status_for_league(searched_p_id, searched_p_pos, l_name)
 
             search_rows.append(row_dict)
             df_search = pd.DataFrame(search_rows)
             st.dataframe(df_search, use_container_width=True, hide_index=True)
+
