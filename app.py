@@ -354,8 +354,6 @@ def save_trade_callback(select_key, trade_entry):
     st.session_state[select_key] = []
     st.toast("Proposition enregistrée avec succès !", icon="📌")
 
-
-
 # --- APPELS API SLEEPER ---
 @st.cache_data(ttl=86400)
 def load_sleeper_players():
@@ -409,6 +407,14 @@ def fetch_league_traded_picks(league_id):
     res = requests.get(url)
     return res.json() if res.status_code == 200 else []
 
+# APPEL API TRENDING PLAYERS (WAIVERS)
+@st.cache_data(ttl=3600)
+def fetch_trending_players(type="add", lookback_hours=24, limit=25):
+    """Récupère la liste des joueurs les plus ajoutés sur Sleeper."""
+    url = f"https://api.sleeper.app/v1/players/nfl/trending/{type}?lookback_hours={lookback_hours}&limit={limit}"
+    res = requests.get(url)
+    return res.json() if res.status_code == 200 else []
+
 
 # --- FONCTIONS DE FILTRAGE DES CANDIDATS ---
 
@@ -427,7 +433,6 @@ def parse_roster_requirements(roster_positions):
     return counts
 
 def is_pure_upgrade(my_group_a_roster, target_player, reqs):
-    """Simule le lineup titulaire avec uniquement les joueurs du Groupe A."""
     t_pos = target_player.get("target_pos")
     if t_pos not in ["QB", "RB", "WR", "TE"]:
         return True
@@ -483,11 +488,6 @@ def is_pure_upgrade(my_group_a_roster, target_player, reqs):
     return False
 
 def passes_trade_urgent_no_flex(target_player, user_roster, reqs, group_a_ids_set=None):
-    """
-    Filtre Trade Urgent (Sans FLEX) : Évalue la cible par rapport au pire titulaire STRICT.
-    RÈGLE SPÉCIALE SUPERFLEX : Si l'utilisateur possède déjà au moins 2 QB
-    du Groupe A dans cette ligue, les opportunités QB sont bloquées.
-    """
     pos = target_player.get("target_pos")
     if pos not in ["QB", "RB", "WR", "TE"]:
         return True
@@ -528,7 +528,7 @@ def compute_all_data_and_opportunities(
     leagues = fetch_user_leagues(user_id, year)
 
     if not leagues:
-        return None, None, None, [], [], {}, {}
+        return None, None, None, [], [], {}, {}, {}
 
     league_name_to_id = {l["name"]: l["league_id"] for l in leagues}
     league_size_map = {league["name"]: len(league.get("roster_positions") or []) for league in leagues}
@@ -538,19 +538,26 @@ def compute_all_data_and_opportunities(
 
     user_rosters = []
     user_roster_ids = {}
+    league_rosters_map = {}  # Pour la vérification de disponibilité dans l'onglet Waivers
 
     for league in leagues:
         l_id = league["league_id"]
         rosters = fetch_league_rosters(l_id)
+        
+        taken_in_league = set()
         for roster in rosters:
+            r_players = roster.get("players") or []
+            for p_id in r_players:
+                taken_in_league.add(str(p_id))
             if roster.get("owner_id") == user_id:
                 user_roster_ids[l_id] = roster.get("roster_id")
-                for p_id in roster.get("players") or []:
+                for p_id in r_players:
                     user_rosters.append({
                         "player_id": str(p_id),
                         "league_id": l_id,
                         "league_name": league["name"],
                     })
+        league_rosters_map[league["name"]] = taken_in_league
 
     traded_away_picks = set()
 
@@ -578,7 +585,7 @@ def compute_all_data_and_opportunities(
                 traded_away_picks.add((trade_league, off_item))
 
     if not user_rosters:
-        return None, None, None, [], [], {}, {}
+        return None, None, None, [], [], {}, {}, {}
 
     df_rosters = pd.DataFrame(user_rosters)
 
@@ -745,8 +752,8 @@ def compute_all_data_and_opportunities(
         leagues,
         league_size_map,
         league_reqs_map,
+        league_rosters_map,
     )
-
 # --- SIDEBAR & PARAMÈTRES ---
 st.sidebar.header("⚙️ Paramètres")
 user_id_input = st.sidebar.text_input("ID Sleeper", value="742374956750540800")
@@ -788,6 +795,7 @@ with st.spinner("Analyse et calcul des opportunités..."):
         leagues,
         league_size_map,
         league_reqs_map,
+        league_rosters_map,
     ) = compute_all_data_and_opportunities(
         user_id_input, season_year, threshold_group_a, accepted_trades_tuple
     )
@@ -810,7 +818,6 @@ if "excluded_leagues" not in st.session_state:
 
 # EXPANDER EXCLUSION LIGUES PERSISTÉ
 with st.sidebar.expander("🏟️ Exclure des Ligues (Radar)", expanded=False):
-    # 1. Menu déroulant pour masquer manuellement une ligue
     available_to_exclude = [l for l in all_league_names if l not in st.session_state["excluded_leagues"]]
     
     selected_to_add = st.selectbox(
@@ -826,7 +833,6 @@ with st.sidebar.expander("🏟️ Exclure des Ligues (Radar)", expanded=False):
 
     st.markdown("---")
     
-    # 2. Bouton de recalcul manuel automatique basé sur l'ADP
     if st.button("🔄 Recalculer le masquage automatique", help="Analyse les ligues n'ayant aucun joueur Groupe B sous le rang ADP max et met à jour la BDD Turso."):
         valid_b_players = group_b[group_b["search_rank"] <= rank_threshold_b]
         leagues_with_valid_b = set()
@@ -842,7 +848,6 @@ with st.sidebar.expander("🏟️ Exclure des Ligues (Radar)", expanded=False):
     st.markdown("---")
     st.caption("🚫 **Ligues actuellement masquées (Persistées) :**")
     
-    # 3. Liste des ligues masquées avec bouton de suppression
     if st.session_state["excluded_leagues"]:
         for exc_league in sorted(list(st.session_state["excluded_leagues"])):
             badge = league_badge_map.get(exc_league, '')
@@ -888,8 +893,8 @@ pending_trades = [t for t in st.session_state["trade_history"] if t["status"] ==
 pending_target_pairs = set((t["target_name"], t["league"]) for t in pending_trades)
 pending_offered_pairs = set((p_name, t["league"]) for t in pending_trades for p_name in t["offered_names"])
 
-# --- NAVIGATION ONGLETS 1, 2 & 3 ---
-tab1, tab2, tab3 = st.tabs(["⭐ Groupe A (Targets)", "🔄 Groupe B (A Trader)", "🎯 Radar de Trade"])
+# --- NAVIGATION ONGLETS 1, 2, 3 & 4 (WAIVERS) ---
+tab1, tab2, tab3, tab4 = st.tabs(["⭐ Groupe A (Targets)", "🔄 Groupe B (A Trader)", "🎯 Radar de Trade", "📥 Waivers"])
 
 with tab1:
     st.subheader(f"Joueurs clés (≥ {threshold_group_a} parts) — Triés par ADP")
@@ -984,7 +989,7 @@ with tab3:
                                 st.toast("Offre rejetée et masquée du radar.", icon="🚫")
                             else:
                                 update_trade_status_in_db(p_trade["id"], new_st)
-                                if new_st == "Accepté":
+                                if new_status == "Accepté":
                                     st.toast("Trade accepté ! Effectifs mis à jour.", icon="✅")
 
                             for item in st.session_state["trade_history"]:
@@ -1188,3 +1193,91 @@ with tab3:
 
     else:
         st.info("Aucune opportunité directe trouvée.")
+
+# ONGLET 4 : WAIVERS (NOUVEAU !)
+with tab4:
+    st.subheader("📥 Disponibilité des Waivers")
+    st.caption("Consulte la disponibilité (✅ Libre ou ❌ Pris) des joueurs tendances et recherchés dans toutes tes ligues.")
+
+    all_players = load_sleeper_players()
+    active_leagues = [l["name"] for l in leagues if l["name"] not in excluded_leagues_input]
+
+    if not active_leagues:
+        st.warning("Toutes vos ligues sont actuellement masquées. Ajustez l'exclusion des ligues dans la sidebar pour voir le tableau des waivers.")
+    else:
+        # --- PARTIE 1 : TRENDING PLAYERS ---
+        col_w_head, col_w_btn = st.columns([3, 1])
+        with col_w_head:
+            st.markdown("### 🔥 Partie 1 : Joueurs Tendance (Trending Adds Sleeper)")
+        with col_w_btn:
+            if st.button("🔄 Rafraîchir les Trending", key="btn_refresh_trending"):
+                fetch_trending_players.clear()
+                st.rerun()
+
+        trending_data = fetch_trending_players(type="add", lookback_hours=24, limit=25)
+
+        if trending_data:
+            trending_rows = []
+            for item in trending_data:
+                p_id = str(item.get("player_id"))
+                p_info = all_players.get(p_id, {})
+                p_name = p_info.get("full_name", f"Joueur #{p_id}")
+                p_pos = p_info.get("position", "N/A")
+                p_team = p_info.get("team", "N/A")
+                adds_count = item.get("count", 0)
+
+                row_dict = {
+                    "Joueur": f"{p_name} ({p_pos} - {p_team})",
+                    "Adds (24h)": f"🔥 +{adds_count}"
+                }
+
+                for l_name in active_leagues:
+                    taken_set = league_rosters_map.get(l_name, set())
+                    row_dict[l_name] = "❌ Pris" if p_id in taken_set else "✅ Libre"
+
+                trending_rows.append(row_dict)
+
+            df_trending = pd.DataFrame(trending_rows)
+            st.dataframe(df_trending, use_container_width=True, hide_index=True)
+        else:
+            st.info("Impossible de récupérer les joueurs trending pour le moment.")
+
+        st.markdown("---")
+
+        # --- PARTIE 2 : RECHERCHE SPÉCIFIQUE ---
+        st.markdown("### 🔍 Partie 2 : Recherche Spécifique de Joueur")
+
+        # Préparation de la liste d'autocomplétion
+        all_players_options = []
+        player_id_map = {}
+
+        for p_id, p_info in all_players.items():
+            full_name = p_info.get("full_name")
+            pos = p_info.get("position")
+            team = p_info.get("team")
+            if full_name and pos in ["QB", "RB", "WR", "TE", "K", "DEF"]:
+                label = f"{full_name} ({pos} - {team or 'FA'})"
+                all_players_options.append(label)
+                player_id_map[label] = p_id
+
+        all_players_options.sort()
+
+        selected_search_label = st.selectbox(
+            "Rechercher un joueur (Autocomplétion) :",
+            options=["-- Taper pour chercher un joueur --"] + all_players_options,
+            key="waiver_search_selectbox"
+        )
+
+        if selected_search_label and selected_search_label != "-- Taper pour chercher un joueur --":
+            searched_p_id = player_id_map.get(selected_search_label)
+            
+            search_rows = []
+            row_dict = {"Joueur": selected_search_label}
+
+            for l_name in active_leagues:
+                taken_set = league_rosters_map.get(l_name, set())
+                row_dict[l_name] = "❌ Pris" if searched_p_id in taken_set else "✅ Libre"
+
+            search_rows.append(row_dict)
+            df_search = pd.DataFrame(search_rows)
+            st.dataframe(df_search, use_container_width=True, hide_index=True)
