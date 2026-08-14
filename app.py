@@ -387,11 +387,18 @@ def fetch_league_draft_info(league_id):
     res = requests.get(url)
     roster_to_slot = {}
     completed_seasons = set()
+    is_upcoming_draft_done = True
+    
     if res.status_code == 200:
         drafts = res.json()
         for d in drafts:
-            if d.get("status") == "complete":
+            status = d.get("status")
+            if status == "complete":
                 completed_seasons.add(str(d.get("season")))
+            else:
+                # Si une draft liée à la ligue est en 'drafting', 'pre_draft' etc.
+                is_upcoming_draft_done = False
+
             draft_id = d.get("draft_id")
             if draft_id:
                 picks_res = requests.get(f"https://api.sleeper.app/v1/draft/{draft_id}/picks")
@@ -399,7 +406,8 @@ def fetch_league_draft_info(league_id):
                     for p in picks_res.json():
                         if p.get("round") == 1:
                             roster_to_slot[p.get("roster_id")] = p.get("draft_slot")
-    return roster_to_slot, completed_seasons
+                            
+    return roster_to_slot, completed_seasons, is_upcoming_draft_done
 
 @st.cache_data(ttl=3600)
 def fetch_league_traded_picks(league_id):
@@ -407,7 +415,6 @@ def fetch_league_traded_picks(league_id):
     res = requests.get(url)
     return res.json() if res.status_code == 200 else []
 
-# APPEL API TRENDING PLAYERS (WAIVERS)
 @st.cache_data(ttl=3600)
 def fetch_trending_players(type="add", lookback_hours=24, limit=25):
     """Récupère la liste des joueurs les plus ajoutés sur Sleeper."""
@@ -528,7 +535,7 @@ def compute_all_data_and_opportunities(
     leagues = fetch_user_leagues(user_id, year)
 
     if not leagues:
-        return None, None, None, [], [], {}, {}, {}
+        return None, None, None, [], [], {}, {}, {}, {}, {}
 
     league_name_to_id = {l["name"]: l["league_id"] for l in leagues}
     league_size_map = {league["name"]: len(league.get("roster_positions") or []) for league in leagues}
@@ -538,26 +545,48 @@ def compute_all_data_and_opportunities(
 
     user_rosters = []
     user_roster_ids = {}
-    league_rosters_map = {}  # Pour la vérification de disponibilité dans l'onglet Waivers
+    league_rosters_map = {} 
+    user_full_roster_objects = {}  # Pour analyser la capacité et le pire joueur par poste pour l'onglet Waivers
+    draft_completed_leagues = set()  # Indique si la draft pour la saison est terminée
 
     for league in leagues:
         l_id = league["league_id"]
+        l_name = league["name"]
         rosters = fetch_league_rosters(l_id)
+        roster_to_slot, completed_seasons, is_upcoming_draft_done = fetch_league_draft_info(l_id)
+        
+        # Vérification si la ligue est prête pour les waivers
+        # La draft est finie si le status de la ligue est 'in_season'/'active' ou si toutes les drafts sont terminées
+        league_status = league.get("status")
+        if league_status in ["in_season", "active"] or is_upcoming_draft_done:
+            draft_completed_leagues.add(l_name)
         
         taken_in_league = set()
+        user_full_roster_objects[l_name] = []
+
         for roster in rosters:
             r_players = roster.get("players") or []
             for p_id in r_players:
                 taken_in_league.add(str(p_id))
+                
             if roster.get("owner_id") == user_id:
                 user_roster_ids[l_id] = roster.get("roster_id")
                 for p_id in r_players:
+                    p_info = all_players.get(str(p_id), {})
+                    p_obj = {
+                        "player_id": str(p_id),
+                        "player_name": p_info.get("full_name", f"Joueur #{p_id}"),
+                        "position": p_info.get("position", "N/A"),
+                        "search_rank": p_info.get("search_rank") or 9999
+                    }
                     user_rosters.append({
                         "player_id": str(p_id),
                         "league_id": l_id,
-                        "league_name": league["name"],
+                        "league_name": l_name,
                     })
-        league_rosters_map[league["name"]] = taken_in_league
+                    user_full_roster_objects[l_name].append(p_obj)
+
+        league_rosters_map[l_name] = taken_in_league
 
     traded_away_picks = set()
 
@@ -585,7 +614,7 @@ def compute_all_data_and_opportunities(
                 traded_away_picks.add((trade_league, off_item))
 
     if not user_rosters:
-        return None, None, None, [], [], {}, {}, {}
+        return None, None, None, [], [], {}, {}, {}, {}, set()
 
     df_rosters = pd.DataFrame(user_rosters)
 
@@ -656,7 +685,7 @@ def compute_all_data_and_opportunities(
             for r in rosters
         }
 
-        roster_to_slot, completed_seasons = fetch_league_draft_info(l_id)
+        roster_to_slot, completed_seasons, _ = fetch_league_draft_info(l_id)
 
         draft_rounds = league.get("settings", {}).get("draft_rounds", 4)
         future_years = [str(int(year) + i) for i in range(0, 3)]
@@ -753,7 +782,10 @@ def compute_all_data_and_opportunities(
         league_size_map,
         league_reqs_map,
         league_rosters_map,
+        user_full_roster_objects,
+        draft_completed_leagues,
     )
+
 # --- SIDEBAR & PARAMÈTRES ---
 st.sidebar.header("⚙️ Paramètres")
 user_id_input = st.sidebar.text_input("ID Sleeper", value="742374956750540800")
@@ -796,6 +828,8 @@ with st.spinner("Analyse et calcul des opportunités..."):
         league_size_map,
         league_reqs_map,
         league_rosters_map,
+        user_full_roster_objects,
+        draft_completed_leagues,
     ) = compute_all_data_and_opportunities(
         user_id_input, season_year, threshold_group_a, accepted_trades_tuple
     )
@@ -989,7 +1023,7 @@ with tab3:
                                 st.toast("Offre rejetée et masquée du radar.", icon="🚫")
                             else:
                                 update_trade_status_in_db(p_trade["id"], new_st)
-                                if new_status == "Accepté":
+                                if new_st == "Accepté":
                                     st.toast("Trade accepté ! Effectifs mis à jour.", icon="✅")
 
                             for item in st.session_state["trade_history"]:
@@ -1194,17 +1228,50 @@ with tab3:
     else:
         st.info("Aucune opportunité directe trouvée.")
 
-# ONGLET 4 : WAIVERS (NOUVEAU !)
+# --- ONGLET 4 : WAIVERS (INTELLIGENT) ---
 with tab4:
-    st.subheader("📥 Disponibilité des Waivers")
-    st.caption("Consulte la disponibilité (✅ Libre ou ❌ Pris) des joueurs tendances et recherchés dans toutes tes ligues.")
+    st.subheader("📥 Disponibilité des Waivers & Analyse Roster")
+    st.caption("Affiche la disponibilité des joueurs (✅ Libre ou ❌ Pris) uniquement dans les ligues dont la draft est terminée, et indique quel joueur dropper si votre roster est plein.")
 
     all_players = load_sleeper_players()
-    active_leagues = [l["name"] for l in leagues if l["name"] not in excluded_leagues_input]
 
-    if not active_leagues:
-        st.warning("Toutes vos ligues sont actuellement masquées. Ajustez l'exclusion des ligues dans la sidebar pour voir le tableau des waivers.")
+    # FILTRE : On conserve les ligues non exclues ET dont la draft est achevée
+    active_waiver_leagues = [
+        l["name"] for l in leagues 
+        if l["name"] not in excluded_leagues_input and l["name"] in draft_completed_leagues
+    ]
+
+    if not active_waiver_leagues:
+        st.warning("Aucune ligue éligible pour les waivers. Soit toutes vos ligues sont masquées, soit les drafts pour la saison à venir ne sont pas encore terminées.")
     else:
+
+        def get_waiver_status_for_league(p_id, p_pos, l_name):
+            """Calcule le statut (Pris / Libre) et indique le joueur suggéré au drop si le roster est complet."""
+            taken_set = league_rosters_map.get(l_name, set())
+            
+            if p_id in taken_set:
+                return "❌ Pris"
+
+            # Le joueur est LIBRE : vérification de la taille du roster
+            my_roster = user_full_roster_objects.get(l_name, [])
+            max_roster_size = league_size_map.get(l_name, 25)
+
+            if len(my_roster) < max_roster_size:
+                return "✅ Libre (Place dispo)"
+
+            # Le roster est plein : recherche du joueur du même poste avec le pire rank ADP
+            same_pos_players = [p for p in my_roster if p.get("position") == p_pos]
+
+            if same_pos_players:
+                # Tri décroissant sur search_rank (plus le chiffre est grand, moins bon est le joueur)
+                worst_player = max(same_pos_players, key=lambda x: x.get("search_rank", 0))
+                return f"✅ Libre (Drop : {worst_player['player_name']})"
+            else:
+                # Si aucun joueur au même poste, suggérer le pire joueur global du banc
+                worst_global = max(my_roster, key=lambda x: x.get("search_rank", 0))
+                return f"✅ Libre (Drop : {worst_global['player_name']})"
+
+
         # --- PARTIE 1 : TRENDING PLAYERS ---
         col_w_head, col_w_btn = st.columns([3, 1])
         with col_w_head:
@@ -1231,9 +1298,8 @@ with tab4:
                     "Adds (24h)": f"🔥 +{adds_count}"
                 }
 
-                for l_name in active_leagues:
-                    taken_set = league_rosters_map.get(l_name, set())
-                    row_dict[l_name] = "❌ Pris" if p_id in taken_set else "✅ Libre"
+                for l_name in active_waiver_leagues:
+                    row_dict[l_name] = get_waiver_status_for_league(p_id, p_pos, l_name)
 
                 trending_rows.append(row_dict)
 
@@ -1244,10 +1310,10 @@ with tab4:
 
         st.markdown("---")
 
-        # --- PARTIE 2 : RECHERCHE SPÉCIFIQUE ---
+        # --- PARTPARTIE 2 : RECHERCHE SPÉCIFIQUE ---
         st.markdown("### 🔍 Partie 2 : Recherche Spécifique de Joueur")
 
-        # Préparation de la liste d'autocomplétion
+        # Autocomplétion
         all_players_options = []
         player_id_map = {}
 
@@ -1258,7 +1324,7 @@ with tab4:
             if full_name and pos in ["QB", "RB", "WR", "TE", "K", "DEF"]:
                 label = f"{full_name} ({pos} - {team or 'FA'})"
                 all_players_options.append(label)
-                player_id_map[label] = p_id
+                player_id_map[label] = (p_id, pos)
 
         all_players_options.sort()
 
@@ -1269,14 +1335,13 @@ with tab4:
         )
 
         if selected_search_label and selected_search_label != "-- Taper pour chercher un joueur --":
-            searched_p_id = player_id_map.get(selected_search_label)
+            searched_p_id, searched_p_pos = player_id_map.get(selected_search_label)
             
             search_rows = []
             row_dict = {"Joueur": selected_search_label}
 
-            for l_name in active_leagues:
-                taken_set = league_rosters_map.get(l_name, set())
-                row_dict[l_name] = "❌ Pris" if searched_p_id in taken_set else "✅ Libre"
+            for l_name in active_waiver_leagues:
+                row_dict[l_name] = get_waiver_status_for_league(searched_p_id, searched_p_pos, l_name)
 
             search_rows.append(row_dict)
             df_search = pd.DataFrame(search_rows)
