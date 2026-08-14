@@ -1235,7 +1235,6 @@ with tab4:
 
     all_players = load_sleeper_players()
 
-    # FILTRE : Ligues non exclues ET dont la draft est terminée
     active_waiver_leagues = [
         l["name"] for l in leagues 
         if l["name"] not in excluded_leagues_input and l["name"] in draft_completed_leagues
@@ -1277,11 +1276,13 @@ with tab4:
                 fetch_trending_players.clear()
                 st.rerun()
 
-        trending_data = fetch_trending_players(type="add", lookback_hours=24, limit=25)
+        trending_data = fetch_trending_players(type="add", lookback_hours=24, limit=50)
 
         if trending_data:
-            # 1. PRÉPARATION DE LA LISTE DES JOUEURS TRENDING (pour la multiselect)
-            trending_players_map = {} # label -> (player_id, position)
+            # 1. PRÉPARATION DES DONNÉES
+            trending_players_map = {}
+            available_positions = set()
+
             for item in trending_data:
                 p_id = str(item.get("player_id"))
                 p_info = all_players.get(p_id, {})
@@ -1295,22 +1296,42 @@ with tab4:
                     "pos": p_pos,
                     "count": item.get("count", 0)
                 }
+                if p_pos in ["QB", "RB", "WR", "TE", "K", "DEF"]:
+                    available_positions.add(p_pos)
 
-            # 2. SELECTION MULTISELECT (Uniquement les joueurs Trending)
-            selected_trending_labels = st.multiselect(
-                "Filtrer les Trending (masque les autres joueurs et masque les ligues où ils sont DÉJÀ pris) :",
-                options=list(trending_players_map.keys()),
-                placeholder="Sélectionner un ou plusieurs joueurs du Top Trending...",
-                key="waiver_multiselect_trending_only"
-            )
+            # 2. FILTRES D'AFFICHAGE (POSTES ET JOUEURS)
+            col_f1, col_f2 = st.columns([1, 2])
+
+            with col_f1:
+                selected_positions = st.multiselect(
+                    "Filtrer par poste :",
+                    options=sorted(list(available_positions)),
+                    default=[],
+                    placeholder="Tous les postes",
+                    key="waiver_pos_filter"
+                )
+
+            # Filtrage préalable par poste pour restreindre les options du multiselect joueur
+            filtered_by_pos_map = {
+                label: data for label, data in trending_players_map.items()
+                if not selected_positions or data["pos"] in selected_positions
+            }
+
+            with col_f2:
+                selected_trending_labels = st.multiselect(
+                    "Masquer d'autres joueurs / Masquer ligues si pris :",
+                    options=list(filtered_by_pos_map.keys()),
+                    placeholder="Sélectionner un ou plusieurs joueurs...",
+                    key="waiver_multiselect_trending_only"
+                )
 
             # 3. CALCUL DES LIGNES ET COLONNES À CONSERVER
             filtered_waiver_leagues = active_waiver_leagues.copy()
 
             if selected_trending_labels:
-                # Filtrage des Ligues (Colonnes) : on masque si au moins un joueur sélectionné y est pris
+                # Filtrage des Ligues (Colonnes)
                 for label in selected_trending_labels:
-                    p_id = trending_players_map[label]["id"]
+                    p_id = filtered_by_pos_map[label]["id"]
                     filtered_waiver_leagues = [
                         l_name for l_name in filtered_waiver_leagues
                         if p_id not in league_rosters_map.get(l_name, set())
@@ -1321,11 +1342,11 @@ with tab4:
                     f"où **tous** les joueurs sélectionnés sont encore LIBRES."
                 )
 
-                # Filtrage des Joueurs (Lignes) : Uniquement ceux sélectionnés
-                display_targets = {label: trending_players_map[label] for label in selected_trending_labels}
+                # Filtrage des Joueurs (Lignes) : Uniquement ceux sélectionnés dans le filtre joueur
+                display_targets = {label: filtered_by_pos_map[label] for label in selected_trending_labels}
             else:
-                # Si rien n'est sélectionné, on affiche toutes les lignes et toutes les ligues
-                display_targets = trending_players_map
+                # Sinon on garde tous les joueurs correspondant au filtre par poste
+                display_targets = filtered_by_pos_map
 
             # 4. CONSTRUCTION DU DATAFRAME TENDANCE
             trending_rows = []
@@ -1345,17 +1366,32 @@ with tab4:
                 trending_rows.append(row_dict)
 
             df_trending = pd.DataFrame(trending_rows)
-            st.dataframe(df_trending, use_container_width=True, hide_index=True)
+
+            # 5. AFFICHAGE AVEC COLONNE "JOUEUR" FIGÉE (PINNED)
+            st.dataframe(
+                df_trending,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Joueur": st.column_config.TextColumn(
+                        "Joueur",
+                        pinned=True  # Gèle la colonne à gauche lors du défilement horizontal
+                    ),
+                    "Adds (24h)": st.column_config.TextColumn(
+                        "Adds (24h)",
+                        pinned=True  # Optionnel : gèle aussi le nombre d'adds si souhaité
+                    )
+                }
+            )
 
         else:
             st.info("Impossible de récupérer les joueurs trending pour le moment.")
 
         st.markdown("---")
 
-        # --- PARTIE 2 : RECHERCHE SPÉCIFIQUE (Non impactée par le filtre Parte 1) ---
+        # --- PARTIE 2 : RECHERCHE SPÉCIFIQUE ---
         st.markdown("### 🔍 Partie 2 : Recherche Spécifique de Joueur")
 
-        # Construction de la liste complète des joueurs pour la recherche libre
         all_players_options = []
         full_player_id_map = {}
 
@@ -1387,5 +1423,13 @@ with tab4:
 
             search_rows.append(row_dict)
             df_search = pd.DataFrame(search_rows)
-            st.dataframe(df_search, use_container_width=True, hide_index=True)
+            st.dataframe(
+                df_search, 
+                use_container_width=True, 
+                hide_index=True,
+                column_config={
+                    "Joueur": st.column_config.TextColumn("Joueur", pinned=True)
+                }
+            )
+
 
