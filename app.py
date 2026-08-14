@@ -1263,14 +1263,56 @@ with tab4:
             same_pos_players = [p for p in my_roster if p.get("position") == p_pos]
 
             if same_pos_players:
-                # Tri décroissant sur search_rank (plus le chiffre est grand, moins bon est le joueur)
                 worst_player = max(same_pos_players, key=lambda x: x.get("search_rank", 0))
                 return f"✅ Libre (Drop : {worst_player['player_name']})"
             else:
-                # Si aucun joueur au même poste, suggérer le pire joueur global du banc
                 worst_global = max(my_roster, key=lambda x: x.get("search_rank", 0))
                 return f"✅ Libre (Drop : {worst_global['player_name']})"
 
+
+        # --- BARRAGE DE FILTRAGE GLOBAL : MULTISELECT JOUEURS ---
+        st.markdown("### 🚫 Masquage multi-joueurs")
+        
+        # Préparation de la liste complète pour l'autocomplétion
+        all_players_options = []
+        player_id_map = {}
+
+        for p_id, p_info in all_players.items():
+            full_name = p_info.get("full_name")
+            pos = p_info.get("position")
+            team = p_info.get("team")
+            if full_name and pos in ["QB", "RB", "WR", "TE", "K", "DEF"]:
+                label = f"{full_name} ({pos} - {team or 'FA'})"
+                all_players_options.append(label)
+                player_id_map[label] = (p_id, pos)
+
+        all_players_options.sort()
+
+        selected_taken_players = st.multiselect(
+            "Sélectionner un ou plusieurs joueurs à cibler (masque les ligues où ils sont DÉJÀ pris) :",
+            options=all_players_options,
+            placeholder="Taper un nom de joueur (ex: Isiah Pacheco, Dontayvion Wicks...)",
+            key="waiver_multiselect_hide_taken"
+        )
+
+        # Calcul des ligues filtrées
+        filtered_waiver_leagues = active_waiver_leagues.copy()
+
+        if selected_taken_players:
+            # Pour chaque joueur sélectionné, on retire les ligues dans lesquelles il est dans taken_set
+            for p_label in selected_taken_players:
+                p_id, _ = player_id_map[p_label]
+                filtered_waiver_leagues = [
+                    l_name for l_name in filtered_waiver_leagues
+                    if p_id not in league_rosters_map.get(l_name, set())
+                ]
+
+            st.info(
+                f"💡 **{len(filtered_waiver_leagues)} / {len(active_waiver_leagues)} ligue(s)** affichée(s) "
+                f"(où **tous** les joueurs sélectionnés ci-dessus sont encore disponibles)."
+            )
+
+        st.markdown("---")
 
         # --- PARTIE 1 : TRENDING PLAYERS ---
         col_w_head, col_w_btn = st.columns([3, 1])
@@ -1298,7 +1340,8 @@ with tab4:
                     "Adds (24h)": f"🔥 +{adds_count}"
                 }
 
-                for l_name in active_waiver_leagues:
+                # On n'affiche QUE les colonnes correspondant aux ligues filtrées
+                for l_name in filtered_waiver_leagues:
                     row_dict[l_name] = get_waiver_status_for_league(p_id, p_pos, l_name)
 
                 trending_rows.append(row_dict)
@@ -1310,26 +1353,11 @@ with tab4:
 
         st.markdown("---")
 
-        # --- PARTPARTIE 2 : RECHERCHE SPÉCIFIQUE ---
+        # --- PARTIE 2 : RECHERCHE SPÉCIFIQUE ---
         st.markdown("### 🔍 Partie 2 : Recherche Spécifique de Joueur")
 
-        # Autocomplétion
-        all_players_options = []
-        player_id_map = {}
-
-        for p_id, p_info in all_players.items():
-            full_name = p_info.get("full_name")
-            pos = p_info.get("position")
-            team = p_info.get("team")
-            if full_name and pos in ["QB", "RB", "WR", "TE", "K", "DEF"]:
-                label = f"{full_name} ({pos} - {team or 'FA'})"
-                all_players_options.append(label)
-                player_id_map[label] = (p_id, pos)
-
-        all_players_options.sort()
-
         selected_search_label = st.selectbox(
-            "Rechercher un joueur (Autocomplétion) :",
+            "Rechercher un joueur spécifique à ajouter :",
             options=["-- Taper pour chercher un joueur --"] + all_players_options,
             key="waiver_search_selectbox"
         )
@@ -1340,7 +1368,7 @@ with tab4:
             search_rows = []
             row_dict = {"Joueur": selected_search_label}
 
-            for l_name in active_waiver_leagues:
+            for l_name in filtered_waiver_leagues:
                 row_dict[l_name] = get_waiver_status_for_league(searched_p_id, searched_p_pos, l_name)
 
             search_rows.append(row_dict)
