@@ -81,7 +81,7 @@ def execute_turso_query(statements):
 
 
 def init_db():
-    """Crée les tables et migre le schéma vers 11 colonnes + table excluded_leagues."""
+    """Crée les tables et gère la persistance de la config utilisateur."""
     st.session_state["db_warning"] = None
     if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
         try:
@@ -96,6 +96,9 @@ def init_db():
                 );""", []),
                 ("""CREATE TABLE IF NOT EXISTS excluded_leagues (
                     league_name TEXT PRIMARY KEY
+                );""", []),
+                ("""CREATE TABLE IF NOT EXISTS user_config (
+                    key TEXT PRIMARY KEY, value TEXT
                 );""", [])
             ])
         except Exception as e:
@@ -105,12 +108,13 @@ def init_db():
 
 
 def load_persisted_state():
-    """Charge l'historique (11 colonnes) et la blacklist depuis Turso."""
+    """Charge l'historique, la blacklist et la config depuis Turso."""
     if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN and not st.session_state.get("db_warning"):
         try:
             res = execute_turso_query([
                 ("SELECT id, date, status, league, owner, target_id, target_name, target_full, offered_full, offered_names, value_metrics FROM trade_history;", []),
-                ("SELECT id, type, owner, target_name, league FROM blacklist;", [])
+                ("SELECT id, type, owner, target_name, league FROM blacklist;", []),
+                ("SELECT key, value FROM user_config;", [])
             ])
             
             trades = []
@@ -119,23 +123,16 @@ def load_persisted_state():
                 for row in rows:
                     if len(row) >= 10:
                         trades.append({
-                            "id": row[0], 
-                            "date": row[1], 
-                            "status": row[2], 
-                            "league": row[3],
-                            "owner": row[4], 
-                            "target_id": row[5], 
-                            "target_name": row[6],
-                            "target_full": row[7], 
-                            "offered_full": row[8],
+                            "id": row[0], "date": row[1], "status": row[2], "league": row[3],
+                            "owner": row[4], "target_id": row[5], "target_name": row[6],
+                            "target_full": row[7], "offered_full": row[8],
                             "offered_names": str(row[9]).split(";;") if row[9] else [],
                             "value_metrics": row[10] if len(row) >= 11 and row[10] is not None else ""
                         })
 
-            b_owners = set()
-            b_targets = set()
+            b_owners, b_targets = set(), set()
             if res and len(res) > 1:
-                cols_b, rows_b = res[1]
+                _, rows_b = res[1]
                 for row in rows_b:
                     if len(row) >= 5:
                         if row[1] == "owner":
@@ -143,11 +140,27 @@ def load_persisted_state():
                         elif row[1] == "target":
                             b_targets.add((row[3], row[4], row[2]))
 
-            return trades, b_owners, b_targets
+            saved_username = ""
+            if res and len(res) > 2:
+                _, rows_cfg = res[2]
+                for row in rows_cfg:
+                    if row[0] == "sleeper_username":
+                        saved_username = row[1]
+
+            return trades, b_owners, b_targets, saved_username
         except Exception as e:
             st.session_state["db_warning"] = f"Erreur lecture Turso : {str(e)}"
 
-    return [], set(), set()
+    return [], set(), set(), ""
+
+
+def save_user_config_db(key, value):
+    """Enregistre un paramètre de configuration dans Turso."""
+    if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
+        try:
+            execute_turso_query([("INSERT OR REPLACE INTO user_config (key, value) VALUES (?, ?);", [key, value])])
+        except Exception as e:
+            st.toast(f"Erreur sauvegarde config : {e}", icon="⚠️")
 
 
 def load_excluded_leagues_db():
@@ -176,17 +189,6 @@ def remove_excluded_league_db(league_name):
             execute_turso_query([("DELETE FROM excluded_leagues WHERE league_name = ?;", [league_name])])
         except Exception as e:
             st.toast(f"Erreur retrait ligue masquée : {e}", icon="⚠️")
-
-
-def save_all_excluded_leagues_db(league_set):
-    if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
-        try:
-            statements = [("DELETE FROM excluded_leagues;", [])]
-            for lname in league_set:
-                statements.append(("INSERT INTO excluded_leagues (league_name) VALUES (?);", [lname]))
-            execute_turso_query(statements)
-        except Exception as e:
-            st.toast(f"Erreur mise à jour globale des ligues masquées : {e}", icon="⚠️")
 
 
 def add_trade_to_db(trade):
@@ -237,7 +239,6 @@ def remove_from_blacklist_db(item_id):
             execute_turso_query([("DELETE FROM blacklist WHERE id = ?;", [item_id])])
         except Exception as e:
             st.toast(f"Erreur retrait blacklist : {e}", icon="⚠️")
-
 # ==========================================
 # 2. INITIALISATION ET HELPERS
 # ==========================================
@@ -245,10 +246,12 @@ def remove_from_blacklist_db(item_id):
 init_db()
 
 if "trade_history" not in st.session_state:
-    t_hist, b_owners, b_targets = load_persisted_state()
+    t_hist, b_owners, b_targets, saved_user = load_persisted_state()
     st.session_state["trade_history"] = t_hist
     st.session_state["blacklisted_owners"] = b_owners
     st.session_state["blacklisted_targets"] = b_targets
+    if "sleeper_username" not in st.session_state:
+        st.session_state["sleeper_username"] = saved_user
 
 if st.session_state.get("db_warning"):
     st.error(f"⚠️ **Alerte BDD Turso :** {st.session_state['db_warning']}")
@@ -395,16 +398,35 @@ def fetch_league_traded_picks(league_id):
     url = f"https://api.sleeper.app/v1/league/{league_id}/traded_picks"
     res = requests.get(url)
     return res.json() if res.status_code == 200 else []
-
 # ==========================================
 # 4. INTERFACE UTILISATEUR & FILTRES
 # ==========================================
 
 st.title("🏈 Empire Trade Radar")
 
+# Callback pour mettre à jour et persister le nom d'utilisateur
+def on_username_change():
+    new_val = st.session_state.get("input_username", "").strip()
+    st.session_state["sleeper_username"] = new_val
+    save_user_config_db("sleeper_username", new_val)
+
 with st.sidebar:
     st.header("⚙️ Configuration")
-    username = st.text_input("Nom d'utilisateur Sleeper", value="")
+    
+    # Champ verrouillé via key + session_state pour éviter qu'il ne se vide
+    username_val = st.session_state.get("sleeper_username", "")
+    username = st.text_input(
+        "Nom d'utilisateur Sleeper", 
+        value=username_val, 
+        key="input_username",
+        on_change=on_username_change
+    )
+    
+    # Synchronisation directe au cas où l'utilisateur tape sans valider
+    if username != st.session_state.get("sleeper_username"):
+        st.session_state["sleeper_username"] = username
+        save_user_config_db("sleeper_username", username)
+
     season_year = st.selectbox("Saison", [2026, 2025, 2024], index=0)
     
     st.divider()
@@ -419,8 +441,10 @@ with st.sidebar:
 
 # Récupération de l'utilisateur Sleeper
 user_data = None
-if username:
-    u_res = requests.get(f"https://api.sleeper.app/v1/user/{username}")
+current_user = st.session_state.get("sleeper_username", "").strip()
+
+if current_user:
+    u_res = requests.get(f"https://api.sleeper.app/v1/user/{current_user}")
     if u_res.status_code == 200:
         user_data = u_res.json()
     else:
@@ -435,7 +459,7 @@ all_players = load_sleeper_players()
 leagues = fetch_user_leagues(my_user_id, str(season_year))
 
 if not leagues:
-    st.warning(f"Aucune ligue trouvée pour {username} en {season_year}.")
+    st.warning(f"Aucune ligue trouvée pour **{current_user}** en {season_year}.")
     st.stop()
 
 # Chargement des ligues masquées enregistrées
@@ -444,8 +468,7 @@ if "excluded_leagues" not in st.session_state:
 
 active_leagues = [l for l in leagues if l["name"] not in st.session_state["excluded_leagues"]]
 
-st.success(f" Connecté : **{username}** | **{len(active_leagues)}** / **{len(leagues)}** ligues actives")
-
+st.success(f"Connecté : **{current_user}** | **{len(active_leagues)}** / **{len(leagues)}** ligues actives")
 # ==========================================
 # 5. MOTEUR D'ANALYSE ET AFFICHAGE TABLEAU
 # ==========================================
@@ -484,7 +507,7 @@ for league in active_leagues:
             
         opp_pseudo = users_map.get(opp_owner_id, "Adversaire")
         
-        # Vérification Blacklist
+        # Vérification Blacklist Propriétaire
         if opp_pseudo in st.session_state.get("blacklisted_owners", set()):
             continue
             
@@ -529,14 +552,13 @@ for league in active_leagues:
                         "Rank Monnaie": f"#{b_match['rank']}"
                     })
 
-# --- AFFICHAGE AVEC COLONNE FIGÉE ---
+# --- AFFICHAGE AVEC COLONNE FIGÉE ET PERSISTANTE ---
 st.subheader("⚡ Opportunités de Trades Détectées")
 
 if trade_opportunities:
     df_trades = pd.DataFrame(trade_opportunities)
     
-    # 📌 POSE DE LA COLONNE FIGÉE EN INDEX :
-    # Définir 'Cible (Joueur)' comme index la fige automatiquement tout à gauche lors du scroll horizontal
+    # 📌 COLONNE FIGÉE À GAUCHE (SET_INDEX) :
     df_display = df_trades.set_index("Cible (Joueur)")
     
     st.dataframe(
@@ -544,6 +566,6 @@ if trade_opportunities:
         use_container_width=True,
         height=500
     )
-    st.caption("💡 *Astuce : La première colonne 'Cible (Joueur)' est figée à gauche lors du défilement horizontal.*")
+    st.caption("💡 *La colonne 'Cible (Joueur)' reste figée à gauche lors du défilement horizontal.*")
 else:
     st.info("Aucune opportunité trouvée avec les filtres actuels. Essayez d'élargir les rangs ADP dans le panneau latéral.")
