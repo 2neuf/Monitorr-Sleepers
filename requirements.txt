@@ -3,3 +3,4 @@ starlette==0.41.2
 requests
 pandas
 numpy
+streamlit-aggrid
