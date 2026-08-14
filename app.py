@@ -1374,12 +1374,10 @@ with tab4:
                 hide_index=True,
                 column_config={
                     "Joueur": st.column_config.Column(
-                        "Joueur",
-                        pinned=True  # Gèle la colonne à gauche lors du défilement horizontal
+                        "Joueur"  # Gèle la colonne à gauche lors du défilement horizontal
                     ),
                     "Adds (24h)": st.column_config.Column(
-                        "Adds (24h)",
-                        pinned=True  # Optionnel : gèle aussi le nombre d'adds si souhaité
+                        "Adds (24h)"  # Optionnel : gèle aussi le nombre d'adds si souhaité
                     )
                 }
             )
@@ -1428,7 +1426,7 @@ with tab4:
                 use_container_width=True, 
                 hide_index=True,
                 column_config={
-                    "Joueur": st.column_config.Column("Joueur", pinned=True)
+                    "Joueur": st.column_config.Column("Joueur")
                 }
             )
 
