@@ -844,7 +844,7 @@ league_badge_map = {
     for l in leagues
 } if leagues else {}
 
-all_league_names = sorted([l["name"] for l in leagues]) if leagues else []
+all_league_names = [l["name"] for l in leagues] if leagues else []
 
 # INITIALISATION DEPUIS LA BDD TURSO DES LIGUES MASQUÉES
 if "excluded_leagues" not in st.session_state:
@@ -970,10 +970,10 @@ with tab2:
 with tab3:
     # --- FILTRE PAR LIGUE (POST-DRAFT) ---
     # Récupération des ligues au statut post-draft non masquées
-    post_draft_leagues = sorted([
+    post_draft_leagues = [
         l["name"] for l in leagues 
         if l["name"] in draft_completed_leagues and l["name"] not in excluded_leagues_input
-    ], key=lambda name: (-league_size_map.get(name, 0), name))
+    ]
 
     col_f1, col_f2 = st.columns(2)
     with col_f1:
