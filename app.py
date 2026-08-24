@@ -968,7 +968,33 @@ with tab2:
 
 # ONGLET 3 : RADAR DE TRADE
 with tab3:
-    if pending_trades:
+    # --- FILTRE PAR LIGUE (POST-DRAFT) ---
+    # Récupération des ligues au statut post-draft non masquées
+    post_draft_leagues = sorted([
+        l["name"] for l in leagues 
+        if l["name"] in draft_completed_leagues and l["name"] not in excluded_leagues_input
+    ], key=lambda name: (-league_size_map.get(name, 0), name))
+
+    col_f1, col_f2 = st.columns(2)
+    with col_f1:
+        selected_league = st.selectbox(
+            "Filtrer par ligue (Post-Draft)", 
+            ["Toutes"] + post_draft_leagues, 
+            format_func=lambda name: f"{name} ({league_badge_map.get(name, '')})" if name != "Toutes" else "Toutes",
+            key="trade_league_filter"
+        )
+    with col_f2:
+        selected_pos = st.selectbox("Filtrer par poste ciblé", ["Tous", "QB", "RB", "WR", "TE"], key="trade_pos_filter")
+
+    st.markdown("---")
+
+    # --- FILTRAGE DES TRADES ÉPINGLÉS ---
+    filtered_pending_trades = [
+        t for t in pending_trades 
+        if t["league"] in draft_completed_leagues and (selected_league == "Toutes" or t["league"] == selected_league)
+    ]
+
+    if filtered_pending_trades:
         st.markdown(
             """
             <style>
@@ -989,7 +1015,7 @@ with tab3:
             st.markdown('<div class="pinned-box">', unsafe_allow_html=True)
             st.markdown('<h4 style="color: #c53030; margin-top: 0; margin-bottom: 15px;">📌 Trades en Cours Épinglés</h4>', unsafe_allow_html=True)
 
-            for p_idx, p_trade in enumerate(pending_trades):
+            for p_idx, p_trade in enumerate(filtered_pending_trades):
                 badge_str = f" `[{league_badge_map.get(p_trade['league'], '')}]`" if p_trade['league'] in league_badge_map else ""
                 with st.expander(f"⏳ **{p_trade['target_full']}** | Ligue : *{p_trade['league']}*{badge_str} | Owner : **@{p_trade['owner']}**", expanded=True):
                     col_st, col_dt = st.columns([1, 2])
@@ -1039,6 +1065,7 @@ with tab3:
             st.markdown('</div>', unsafe_allow_html=True)
         st.markdown("---")
 
+
     st.subheader("💡 Opportunités de Trade Détectées")
 
     if target_opportunities:
@@ -1046,6 +1073,9 @@ with tab3:
         for o in target_opportunities:
             l_name = o["league_name"]
             
+            # Filtre uniquement les ligues au statut post-draft
+            if l_name not in draft_completed_leagues:
+                continue
             if l_name in excluded_leagues_input:
                 continue
             if o["owner_pseudo"] in st.session_state["blacklisted_owners"]:
@@ -1061,22 +1091,6 @@ with tab3:
                 continue
 
             radar_opps.append(o)
-
-        col_f1, col_f2 = st.columns(2)
-        raw_leagues = list(set(o["league_name"] for o in radar_opps))
-        sorted_leagues = sorted(raw_leagues, key=lambda name: (-league_size_map.get(name, 0), name))
-        all_leagues = ["Toutes"] + sorted_leagues
-        all_positions = ["Tous", "QB", "RB", "WR", "TE"]
-
-        with col_f1:
-            selected_league = st.selectbox(
-                "Filtrer par ligue", 
-                all_leagues, 
-                format_func=lambda name: f"{name} ({league_badge_map.get(name, '')})" if name != "Toutes" else "Toutes",
-                key="trade_league_filter"
-            )
-        with col_f2:
-            selected_pos = st.selectbox("Filtrer par poste ciblé", all_positions, key="trade_pos_filter")
 
         filtered_opps = radar_opps
         if selected_league != "Toutes":
