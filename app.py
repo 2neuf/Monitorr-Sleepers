@@ -1397,7 +1397,7 @@ with tab4:
             full_name = p_info.get("full_name")
             pos = p_info.get("position")
             team = p_info.get("team")
-            if full_name and pos in ["QB", "RB", "WR", "TE", "K", "DEF"]:
+            if full_name and pos in ["QB", "RB", "WR", "TE"]:
                 label = f"{full_name} ({pos} - {team or 'FA'})"
                 all_players_options.append(label)
                 full_player_id_map[label] = (p_id, pos)
