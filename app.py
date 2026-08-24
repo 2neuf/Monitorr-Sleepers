@@ -1296,7 +1296,7 @@ with tab4:
                     "pos": p_pos,
                     "count": item.get("count", 0)
                 }
-                if p_pos in ["QB", "RB", "WR", "TE", "K", "DEF"]:
+                if p_pos in ["QB", "RB", "WR", "TE"]:
                     available_positions.add(p_pos)
 
             # 2. FILTRES D'AFFICHAGE (POSTES ET JOUEURS)
