@@ -1501,13 +1501,16 @@ with tab5:
             if not active_cols_leagues:
                 st.info("Les joueurs clés de ce match sont dans des ligues actuellement masquées.")
             else:
-                # 5. Construction de la matrice : Joueurs (Lignes) x Ligues (Colonnes)
+                # 5. Construction de la matrice : Joueurs | Total | Ligues
                 matrix_rows = []
                 for _, p_row in key_players_in_match.iterrows():
                     p_leagues_set = set(p_row["leagues"])
+                    # Décompte uniquement des ligues actives non masquées
+                    active_shares_count = len(p_leagues_set.intersection(set(active_cols_leagues)))
                     
                     row_data = {
-                        "Joueurs": f"{p_row['player_name']} ({p_row['position']} - {p_row['team']})"
+                        "Joueurs": f"{p_row['player_name']} ({p_row['position']} - {p_row['team']})",
+                        "Ligues (Total)": f"📊 {active_shares_count}"
                     }
                     
                     for lname in active_cols_leagues:
@@ -1524,6 +1527,8 @@ with tab5:
                     use_container_width=True,
                     hide_index=True,
                     column_config={
-                        "Joueurs": st.column_config.Column("Joueurs / Ligues")
+                        "Joueurs": st.column_config.Column("Joueurs"),
+                        "Ligues (Total)": st.column_config.Column("Ligues (Total)")
                     }
                 )
+
