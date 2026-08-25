@@ -396,7 +396,6 @@ def fetch_league_draft_info(league_id):
             if status == "complete":
                 completed_seasons.add(str(d.get("season")))
             else:
-                # Si une draft liée à la ligue est en 'drafting', 'pre_draft' etc.
                 is_upcoming_draft_done = False
 
             draft_id = d.get("draft_id")
@@ -419,6 +418,13 @@ def fetch_league_traded_picks(league_id):
 def fetch_trending_players(type="add", lookback_hours=24, limit=25):
     """Récupère la liste des joueurs les plus ajoutés sur Sleeper."""
     url = f"https://api.sleeper.app/v1/players/nfl/trending/{type}?lookback_hours={lookback_hours}&limit={limit}"
+    res = requests.get(url)
+    return res.json() if res.status_code == 200 else []
+
+@st.cache_data(ttl=3600)
+def fetch_nfl_matchups(week):
+    """Récupère le calendrier NFL des matchs pour une semaine donnée via Sleeper."""
+    url = f"https://api.sleeper.app/v1/matchups/nfl/{week}"
     res = requests.get(url)
     return res.json() if res.status_code == 200 else []
 
@@ -546,8 +552,8 @@ def compute_all_data_and_opportunities(
     user_rosters = []
     user_roster_ids = {}
     league_rosters_map = {} 
-    user_full_roster_objects = {}  # Pour analyser la capacité et le pire joueur par poste pour l'onglet Waivers
-    draft_completed_leagues = set()  # Indique si la draft pour la saison est terminée
+    user_full_roster_objects = {}  
+    draft_completed_leagues = set()  
 
     for league in leagues:
         l_id = league["league_id"]
@@ -555,8 +561,6 @@ def compute_all_data_and_opportunities(
         rosters = fetch_league_rosters(l_id)
         roster_to_slot, completed_seasons, is_upcoming_draft_done = fetch_league_draft_info(l_id)
         
-        # Vérification si la ligue est prête pour les waivers
-        # La draft est finie si le status de la ligue est 'in_season'/'active' ou si toutes les drafts sont terminées
         league_status = league.get("status")
         if league_status in ["in_season", "active"] or is_upcoming_draft_done:
             draft_completed_leagues.add(l_name)
@@ -566,6 +570,8 @@ def compute_all_data_and_opportunities(
 
         for roster in rosters:
             r_players = roster.get("players") or []
+            r_starters = set(roster.get("starters") or [])
+            
             for p_id in r_players:
                 taken_in_league.add(str(p_id))
                 
@@ -583,6 +589,7 @@ def compute_all_data_and_opportunities(
                         "player_id": str(p_id),
                         "league_id": l_id,
                         "league_name": l_name,
+                        "is_starter": str(p_id) in r_starters
                     })
                     user_full_roster_objects[l_name].append(p_obj)
 
@@ -601,6 +608,7 @@ def compute_all_data_and_opportunities(
                 "player_id": str(acq_id),
                 "league_id": t_league_id,
                 "league_name": trade_league,
+                "is_starter": True
             })
 
         for off_item in offered_names:
@@ -792,7 +800,6 @@ user_id_input = st.sidebar.text_input("ID Sleeper", value="742374956750540800")
 season_year = st.sidebar.selectbox("Saison", ["2026", "2025"], index=0)
 threshold_group_a = st.sidebar.slider("Seuil Groupe A (Parts min.)", min_value=2, max_value=5, value=3)
 
-# BOUTONS BASCULE FILTRES
 filter_upgrade_pure = st.sidebar.toggle(
     "🔥 Filtre Upgrade Pure",
     value=False,
@@ -838,7 +845,6 @@ if df_rosters is None:
     st.warning("Aucun roster trouvé pour cet utilisateur/saison.")
     st.stop()
 
-# Map pour retrouver les badges de chaque ligue
 league_badge_map = {
     l["name"]: get_league_format_badge(l.get("roster_positions"), l.get("settings", {}))
     for l in leagues
@@ -846,7 +852,6 @@ league_badge_map = {
 
 all_league_names = [l["name"] for l in leagues] if leagues else []
 
-# INITIALISATION DEPUIS LA BDD TURSO DES LIGUES MASQUÉES
 if "excluded_leagues" not in st.session_state:
     st.session_state["excluded_leagues"] = load_excluded_leagues_db()
 
@@ -927,8 +932,14 @@ pending_trades = [t for t in st.session_state["trade_history"] if t["status"] ==
 pending_target_pairs = set((t["target_name"], t["league"]) for t in pending_trades)
 pending_offered_pairs = set((p_name, t["league"]) for t in pending_trades for p_name in t["offered_names"])
 
-# --- NAVIGATION ONGLETS 1, 2, 3 & 4 (WAIVERS) ---
-tab1, tab2, tab3, tab4 = st.tabs(["⭐ Groupe A (Targets)", "🔄 Groupe B (A Trader)", "🎯 Radar de Trade", "📥 Waivers"])
+# --- NAVIGATION ONGLETS (AJOUT DE L'ONGLET 5: REDZONE) ---
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "⭐ Groupe A (Targets)", 
+    "🔄 Groupe B (A Trader)", 
+    "🎯 Radar de Trade", 
+    "📥 Waivers",
+    "📺 Redzone Direct"
+])
 
 with tab1:
     st.subheader(f"Joueurs clés (≥ {threshold_group_a} parts) — Triés par ADP")
@@ -968,8 +979,6 @@ with tab2:
 
 # ONGLET 3 : RADAR DE TRADE
 with tab3:
-    # --- FILTRE PAR LIGUE (POST-DRAFT) ---
-    # Récupération des ligues au statut post-draft non masquées
     post_draft_leagues = [
         l["name"] for l in leagues 
         if l["name"] in draft_completed_leagues and l["name"] not in excluded_leagues_input
@@ -988,7 +997,6 @@ with tab3:
 
     st.markdown("---")
 
-    # --- FILTRAGE DES TRADES ÉPINGLÉS ---
     filtered_pending_trades = [
         t for t in pending_trades 
         if t["league"] in draft_completed_leagues and (selected_league == "Toutes" or t["league"] == selected_league)
@@ -1065,7 +1073,6 @@ with tab3:
             st.markdown('</div>', unsafe_allow_html=True)
         st.markdown("---")
 
-
     st.subheader("💡 Opportunités de Trade Détectées")
 
     if target_opportunities:
@@ -1073,7 +1080,6 @@ with tab3:
         for o in target_opportunities:
             l_name = o["league_name"]
             
-            # Filtre uniquement les ligues au statut post-draft
             if l_name not in draft_completed_leagues:
                 continue
             if l_name in excluded_leagues_input:
@@ -1242,7 +1248,7 @@ with tab3:
     else:
         st.info("Aucune opportunité directe trouvée.")
 
-# --- ONGLET 4 : WAIVERS (INTELLIGENT) ---
+# --- ONGLET 4 : WAIVERS ---
 with tab4:
     st.subheader("📥 Disponibilité des Waivers & Analyse Roster")
     st.caption("Affiche la disponibilité des joueurs (✅ Libre ou ❌ Pris) uniquement dans les ligues dont la draft est terminée.")
@@ -1259,7 +1265,6 @@ with tab4:
     else:
 
         def get_waiver_status_for_league(p_id, p_pos, l_name):
-            """Calcule le statut (Pris / Libre) et indique le joueur suggéré au drop si le roster est complet."""
             taken_set = league_rosters_map.get(l_name, set())
             
             if p_id in taken_set:
@@ -1281,7 +1286,6 @@ with tab4:
                 return f"✅ Libre (Drop : {worst_global['player_name']})"
 
 
-        # --- PARTIE 1 : TRENDING PLAYERS ---
         col_w_head, col_w_btn = st.columns([3, 1])
         with col_w_head:
             st.markdown("### 🔥 Partie 1 : Joueurs Tendance (Trending Adds Sleeper)")
@@ -1293,7 +1297,6 @@ with tab4:
         trending_data = fetch_trending_players(type="add", lookback_hours=24, limit=50)
 
         if trending_data:
-            # 1. PRÉPARATION DES DONNÉES
             trending_players_map = {}
             available_positions = set()
 
@@ -1313,7 +1316,6 @@ with tab4:
                 if p_pos in ["QB", "RB", "WR", "TE"]:
                     available_positions.add(p_pos)
 
-            # 2. FILTRES D'AFFICHAGE (POSTES ET JOUEURS)
             col_f1, col_f2 = st.columns([1, 2])
 
             with col_f1:
@@ -1325,7 +1327,6 @@ with tab4:
                     key="waiver_pos_filter"
                 )
 
-            # Filtrage préalable par poste pour restreindre les options du multiselect joueur
             filtered_by_pos_map = {
                 label: data for label, data in trending_players_map.items()
                 if not selected_positions or data["pos"] in selected_positions
@@ -1339,11 +1340,9 @@ with tab4:
                     key="waiver_multiselect_trending_only"
                 )
 
-            # 3. CALCUL DES LIGNES ET COLONNES À CONSERVER
             filtered_waiver_leagues = active_waiver_leagues.copy()
 
             if selected_trending_labels:
-                # Filtrage des Ligues (Colonnes)
                 for label in selected_trending_labels:
                     p_id = filtered_by_pos_map[label]["id"]
                     filtered_waiver_leagues = [
@@ -1356,13 +1355,10 @@ with tab4:
                     f"où **tous** les joueurs sélectionnés sont encore LIBRES."
                 )
 
-                # Filtrage des Joueurs (Lignes) : Uniquement ceux sélectionnés dans le filtre joueur
                 display_targets = {label: filtered_by_pos_map[label] for label in selected_trending_labels}
             else:
-                # Sinon on garde tous les joueurs correspondant au filtre par poste
                 display_targets = filtered_by_pos_map
 
-            # 4. CONSTRUCTION DU DATAFRAME TENDANCE
             trending_rows = []
             for label, p_data in display_targets.items():
                 p_id = p_data["id"]
@@ -1381,18 +1377,13 @@ with tab4:
 
             df_trending = pd.DataFrame(trending_rows)
 
-            # 5. AFFICHAGE AVEC COLONNE "JOUEUR" FIGÉE (PINNED)
             st.dataframe(
                 df_trending,
                 use_container_width=True,
                 hide_index=True,
                 column_config={
-                    "Joueur": st.column_config.Column(
-                        "Joueur"  # Gèle la colonne à gauche lors du défilement horizontal
-                    ),
-                    "Adds (24h)": st.column_config.Column(
-                        "Adds (24h)"  # Optionnel : gèle aussi le nombre d'adds si souhaité
-                    )
+                    "Joueur": st.column_config.Column("Joueur"),
+                    "Adds (24h)": st.column_config.Column("Adds (24h)")
                 }
             )
 
@@ -1401,7 +1392,6 @@ with tab4:
 
         st.markdown("---")
 
-        # --- PARTIE 2 : RECHERCHE SPÉCIFIQUE ---
         st.markdown("### 🔍 Partie 2 : Recherche Spécifique de Joueur")
 
         all_players_options = []
@@ -1444,4 +1434,114 @@ with tab4:
                 }
             )
 
+# ==========================================
+# ONGLET 5 : REDZONE DIRECT (Nouveau)
+# ==========================================
+with tab5:
+    st.subheader("📺 Redzone Direct & Suivi des Matchups")
+    st.caption("Analyse les rencontres de la semaine pour isoler tes **joueurs clés (Groupe A)** lorsqu'ils sont **titulaires** dans tes ligues.")
 
+    # 1. Sélection de la semaine NFL
+    col_week_rz, col_team_rz = st.columns([1, 2])
+    with col_week_rz:
+        rz_week = st.number_input("Semaine NFL", min_value=1, max_value=18, value=1, step=1, key="rz_week_input")
+
+    # 2. Récupération des matchups de la semaine depuis l'API Sleeper
+    nfl_matchups = fetch_nfl_matchups(rz_week)
+
+    if not nfl_matchups:
+        st.info(f"Aucun match trouvé pour la semaine {rz_week} (la saison n'est peut-être pas commencée).")
+    else:
+        # Construction de la liste des rencontres réelles de la semaine
+        games_list = []
+        all_nfl_teams = set()
+        
+        # Le endpoint /matchups/nfl/{week} de Sleeper renvoie les matchs par équipe
+        # On regroupe les paires (ex: KC @ BAL)
+        processed_teams = set()
+        for m in nfl_matchups:
+            team = m.get("team")
+            opponent = m.get("opponent")
+            all_nfl_teams.add(team)
+            
+            if team and opponent and team not in processed_teams:
+                # Création d'un identifiant unique de rencontre (ex: BAL vs KC)
+                matchup_id = "-".join(sorted([team, opponent]))
+                matchup_label = f"🏈 {team} vs {opponent}"
+                games_list.append({"id": matchup_id, "label": matchup_label, "teams": [team, opponent]})
+                processed_teams.add(team)
+                processed_teams.add(opponent)
+
+        games_list.sort(key=lambda x: x["label"])
+
+        with col_team_rz:
+            nfl_filter_team = st.selectbox(
+                "Filtrer par équipe NFL spécifique (Optionnel)",
+                options=["Toutes"] + sorted(list(all_nfl_teams)),
+                key="rz_team_filter"
+            )
+
+        # Filtrage des matchs présentés si une équipe est sélectionnée
+        if nfl_filter_team != "Toutes":
+            filtered_games = [g for g in games_list if nfl_filter_team in g["teams"]]
+        else:
+            filtered_games = games_list
+
+        st.markdown("### 1. Sélectionne une rencontre")
+        game_options = {g["id"]: g["label"] for g in filtered_games}
+
+        if not game_options:
+            st.warning("Aucun match ne correspond aux filtres.")
+        else:
+            selected_game_id = st.radio(
+                "Matchs de la semaine :",
+                options=list(game_options.keys()),
+                format_func=lambda x: game_options[x],
+                horizontal=True,
+                label_visibility="collapsed",
+                key="rz_game_radio"
+            )
+
+            # Identification des équipes du match sélectionné
+            selected_game_teams = next(g["teams"] for g in filtered_games if g["id"] == selected_game_id)
+
+            st.divider()
+
+            # 3. Filtrage du DataFrame des effectifs :
+            # - Joueur appartient aux équipes du match sélectionné
+            # - Joueur fait partie du Groupe A (joueur clé)
+            # - Joueur est TITULAIRE dans la ligue (is_starter == True)
+            group_a_ids_set = set(group_a["player_id"])
+
+            df_starters_rz = df_rosters[
+                (df_rosters["team"].isin(selected_game_teams)) &
+                (df_rosters["player_id"].isin(group_a_ids_set)) &
+                (df_rosters["is_starter"] == True)
+            ].copy()
+
+            # Filtrage complémentaire par équipe NFL si le filtre supérieur est actif
+            if nfl_filter_team != "Toutes":
+                df_starters_rz = df_starters_rz[df_starters_rz["team"] == nfl_filter_team]
+
+            st.markdown(f"## 🎯 Joueurs clés titulaires — **{' vs '.join(selected_game_teams)}**")
+
+            if df_starters_rz.empty:
+                st.info("Aucun joueur clé de ton effectif n'est titulaire dans les ligues sur cette rencontre.")
+            else:
+                # Regroupement par joueur pour afficher l'ensemble de ses ligues titulaires d'un coup
+                grouped_rz = df_starters_rz.groupby(["player_name", "position", "team"])
+
+                rz_cols = st.columns(2)
+                for idx, ((p_name, pos, team), group) in enumerate(grouped_rz):
+                    col_target = rz_cols[idx % 2]
+                    
+                    with col_target:
+                        with st.container(border=True):
+                            st.markdown(f"### 🔥 **{p_name}** `{pos}`")
+                            st.caption(f"Équipe NFL : **{team}**")
+                            st.markdown("**Titulaire dans les ligues suivantes :**")
+                            
+                            for _, row in group.iterrows():
+                                l_name = row["league_name"]
+                                badge = league_badge_map.get(l_name, "")
+                                st.success(f"🟢 **{l_name}** `({badge})`")
