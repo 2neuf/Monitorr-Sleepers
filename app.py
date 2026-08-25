@@ -421,12 +421,37 @@ def fetch_trending_players(type="add", lookback_hours=24, limit=25):
     res = requests.get(url)
     return res.json() if res.status_code == 200 else []
 
-@st.cache_data(ttl=3600)
-def fetch_nfl_matchups(week):
-    """Récupère le calendrier NFL des matchs pour une semaine donnée via Sleeper."""
-    url = f"https://api.sleeper.app/v1/matchups/nfl/{week}"
-    res = requests.get(url)
-    return res.json() if res.status_code == 200 else []
+
+# --- CALENDRIER REEL NFL (Saison Régulière) ---
+def get_nfl_schedule_2026():
+    """Dictionnaire statique du calendrier NFL de la saison régulière."""
+    return {
+        1: [
+            {"away": "NE", "home": "SEA", "label": "NE @ SEA"},
+            {"away": "SF", "home": "LAR", "label": "SF @ LAR"},
+            {"away": "CHI", "home": "CAR", "label": "CHI @ CAR"},
+            {"away": "TB", "home": "CIN", "label": "TB @ CIN"},
+            {"away": "NO", "home": "DET", "label": "NO @ DET"},
+            {"away": "BUF", "home": "HOU", "label": "BUF @ HOU"},
+            {"away": "BAL", "home": "IND", "label": "BAL @ IND"},
+            {"away": "CLE", "home": "JAX", "label": "CLE @ JAX"},
+            {"away": "ATL", "home": "PIT", "label": "ATL @ PIT"},
+            {"away": "NYJ", "home": "TEN", "label": "NYJ @ TEN"},
+            {"away": "ARI", "home": "LAC", "label": "ARI @ LAC"},
+            {"away": "MIA", "home": "LV", "label": "MIA @ LV"},
+            {"away": "GB", "home": "MIN", "label": "GB @ MIN"},
+            {"away": "WAS", "home": "PHI", "label": "WAS @ PHI"},
+            {"away": "DAL", "home": "NYG", "label": "DAL @ NYG"},
+            {"away": "DEN", "home": "KC", "label": "DEN @ KC"},
+        ],
+        2: [
+            {"away": "KC", "home": "BAL", "label": "KC @ BAL"},
+            {"away": "GB", "home": "PHI", "label": "GB @ PHI"},
+            {"away": "ARI", "home": "BUF", "label": "ARI @ BUF"},
+            {"away": "NYJ", "home": "SF", "label": "NYJ @ SF"},
+        ]
+        # Possibilité de compléter avec les semaines 3 à 18
+    }
 
 
 # --- FONCTIONS DE FILTRAGE DES CANDIDATS ---
@@ -552,8 +577,8 @@ def compute_all_data_and_opportunities(
     user_rosters = []
     user_roster_ids = {}
     league_rosters_map = {} 
-    user_full_roster_objects = {}  
-    draft_completed_leagues = set()  
+    user_full_roster_objects = {}
+    draft_completed_leagues = set()
 
     for league in leagues:
         l_id = league["league_id"]
@@ -570,8 +595,6 @@ def compute_all_data_and_opportunities(
 
         for roster in rosters:
             r_players = roster.get("players") or []
-            r_starters = set(roster.get("starters") or [])
-            
             for p_id in r_players:
                 taken_in_league.add(str(p_id))
                 
@@ -589,7 +612,6 @@ def compute_all_data_and_opportunities(
                         "player_id": str(p_id),
                         "league_id": l_id,
                         "league_name": l_name,
-                        "is_starter": str(p_id) in r_starters
                     })
                     user_full_roster_objects[l_name].append(p_obj)
 
@@ -608,7 +630,6 @@ def compute_all_data_and_opportunities(
                 "player_id": str(acq_id),
                 "league_id": t_league_id,
                 "league_name": trade_league,
-                "is_starter": True
             })
 
         for off_item in offered_names:
@@ -932,13 +953,13 @@ pending_trades = [t for t in st.session_state["trade_history"] if t["status"] ==
 pending_target_pairs = set((t["target_name"], t["league"]) for t in pending_trades)
 pending_offered_pairs = set((p_name, t["league"]) for t in pending_trades for p_name in t["offered_names"])
 
-# --- NAVIGATION ONGLETS (AJOUT DE L'ONGLET 5: REDZONE) ---
+# --- NAVIGATION ONGLETS (AJOUT DE L'ONGLET 5 : MATCHUPS NFL) ---
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "⭐ Groupe A (Targets)", 
     "🔄 Groupe B (A Trader)", 
     "🎯 Radar de Trade", 
     "📥 Waivers",
-    "📺 Redzone Direct"
+    "🏈 Matchups NFL"
 ])
 
 with tab1:
@@ -1435,113 +1456,74 @@ with tab4:
             )
 
 # ==========================================
-# ONGLET 5 : REDZONE DIRECT (Nouveau)
+# ONGLET 5 : MATCHUPS NFL (Matrice IRL x Ligues)
 # ==========================================
 with tab5:
-    st.subheader("📺 Redzone Direct & Suivi des Matchups")
-    st.caption("Analyse les rencontres de la semaine pour isoler tes **joueurs clés (Groupe A)** lorsqu'ils sont **titulaires** dans tes ligues.")
+    st.subheader("🏈 Matchups NFL IRL vs Vos Ligues")
+    st.caption("Affiche la matrice Joueurs Clés (Groupe A) x Ligues pour la rencontre sélectionnée.")
 
-    # 1. Sélection de la semaine NFL
-    col_week_rz, col_team_rz = st.columns([1, 2])
-    with col_week_rz:
-        rz_week = st.number_input("Semaine NFL", min_value=1, max_value=18, value=1, step=1, key="rz_week_input")
+    # 1. Choix de la semaine
+    col_w, _ = st.columns([1, 3])
+    with col_w:
+        sel_week = st.number_input("Semaine NFL", min_value=1, max_value=18, value=1, step=1, key="tab5_week")
 
-    # 2. Récupération des matchups de la semaine depuis l'API Sleeper
-    nfl_matchups = fetch_nfl_matchups(rz_week)
+    nfl_schedule = get_nfl_schedule_2026()
+    matchups_for_week = nfl_schedule.get(sel_week, [])
 
-    if not nfl_matchups:
-        st.info(f"Aucun match trouvé pour la semaine {rz_week} (la saison n'est peut-être pas commencée).")
+    if not matchups_for_week:
+        st.info(f"Aucune rencontre enregistrée pour la semaine {sel_week}.")
     else:
-        # Construction de la liste des rencontres réelles de la semaine
-        games_list = []
-        all_nfl_teams = set()
-        
-        # Le endpoint /matchups/nfl/{week} de Sleeper renvoie les matchs par équipe
-        # On regroupe les paires (ex: KC @ BAL)
-        processed_teams = set()
-        for m in nfl_matchups:
-            team = m.get("team")
-            opponent = m.get("opponent")
-            all_nfl_teams.add(team)
-            
-            if team and opponent and team not in processed_teams:
-                # Création d'un identifiant unique de rencontre (ex: BAL vs KC)
-                matchup_id = "-".join(sorted([team, opponent]))
-                matchup_label = f"🏈 {team} vs {opponent}"
-                games_list.append({"id": matchup_id, "label": matchup_label, "teams": [team, opponent]})
-                processed_teams.add(team)
-                processed_teams.add(opponent)
+        # 2. Sélection de la rencontre IRL
+        labels_map = {m["label"]: m for m in matchups_for_week}
+        sel_label = st.selectbox("Choisir une rencontre :", options=list(labels_map.keys()), key="tab5_matchup_select")
 
-        games_list.sort(key=lambda x: x["label"])
+        matchup_data = labels_map[sel_label]
+        away_t = matchup_data["away"]
+        home_t = matchup_data["home"]
 
-        with col_team_rz:
-            nfl_filter_team = st.selectbox(
-                "Filtrer par équipe NFL spécifique (Optionnel)",
-                options=["Toutes"] + sorted(list(all_nfl_teams)),
-                key="rz_team_filter"
-            )
+        # 3. Filtrage des joueurs clés (Groupe A) appartenant à l'une des deux équipes du match
+        key_players_in_match = group_a[group_a["team"].isin([away_t, home_t])].copy()
 
-        # Filtrage des matchs présentés si une équipe est sélectionnée
-        if nfl_filter_team != "Toutes":
-            filtered_games = [g for g in games_list if nfl_filter_team in g["teams"]]
+        if key_players_in_match.empty:
+            st.info(f"Aucun joueur du Groupe A ne participe au match **{sel_label}**.")
         else:
-            filtered_games = games_list
+            # 4. Identification des ligues concernées (qui possèdent au moins un de ces joueurs)
+            leagues_with_players = set()
+            for _, p_row in key_players_in_match.iterrows():
+                leagues_with_players.update(p_row["leagues"])
 
-        st.markdown("### 1. Sélectionne une rencontre")
-        game_options = {g["id"]: g["label"] for g in filtered_games}
+            # Exclus les ligues actuellement masquées
+            active_cols_leagues = sorted([
+                lname for lname in leagues_with_players 
+                if lname not in excluded_leagues_input
+            ])
 
-        if not game_options:
-            st.warning("Aucun match ne correspond aux filtres.")
-        else:
-            selected_game_id = st.radio(
-                "Matchs de la semaine :",
-                options=list(game_options.keys()),
-                format_func=lambda x: game_options[x],
-                horizontal=True,
-                label_visibility="collapsed",
-                key="rz_game_radio"
-            )
-
-            # Identification des équipes du match sélectionné
-            selected_game_teams = next(g["teams"] for g in filtered_games if g["id"] == selected_game_id)
-
-            st.divider()
-
-            # 3. Filtrage du DataFrame des effectifs :
-            # - Joueur appartient aux équipes du match sélectionné
-            # - Joueur fait partie du Groupe A (joueur clé)
-            # - Joueur est TITULAIRE dans la ligue (is_starter == True)
-            group_a_ids_set = set(group_a["player_id"])
-
-            df_starters_rz = df_rosters[
-                (df_rosters["team"].isin(selected_game_teams)) &
-                (df_rosters["player_id"].isin(group_a_ids_set)) &
-                (df_rosters["is_starter"] == True)
-            ].copy()
-
-            # Filtrage complémentaire par équipe NFL si le filtre supérieur est actif
-            if nfl_filter_team != "Toutes":
-                df_starters_rz = df_starters_rz[df_starters_rz["team"] == nfl_filter_team]
-
-            st.markdown(f"## 🎯 Joueurs clés titulaires — **{' vs '.join(selected_game_teams)}**")
-
-            if df_starters_rz.empty:
-                st.info("Aucun joueur clé de ton effectif n'est titulaire dans les ligues sur cette rencontre.")
+            if not active_cols_leagues:
+                st.info("Les joueurs clés de ce match sont dans des ligues actuellement masquées.")
             else:
-                # Regroupement par joueur pour afficher l'ensemble de ses ligues titulaires d'un coup
-                grouped_rz = df_starters_rz.groupby(["player_name", "position", "team"])
-
-                rz_cols = st.columns(2)
-                for idx, ((p_name, pos, team), group) in enumerate(grouped_rz):
-                    col_target = rz_cols[idx % 2]
+                # 5. Construction de la matrice : Joueurs (Lignes) x Ligues (Colonnes)
+                matrix_rows = []
+                for _, p_row in key_players_in_match.iterrows():
+                    p_leagues_set = set(p_row["leagues"])
                     
-                    with col_target:
-                        with st.container(border=True):
-                            st.markdown(f"### 🔥 **{p_name}** `{pos}`")
-                            st.caption(f"Équipe NFL : **{team}**")
-                            st.markdown("**Titulaire dans les ligues suivantes :**")
-                            
-                            for _, row in group.iterrows():
-                                l_name = row["league_name"]
-                                badge = league_badge_map.get(l_name, "")
-                                st.success(f"🟢 **{l_name}** `({badge})`")
+                    row_data = {
+                        "Joueurs": f"{p_row['player_name']} ({p_row['position']} - {p_row['team']})"
+                    }
+                    
+                    for lname in active_cols_leagues:
+                        # Marqueur bleu si le joueur est présent dans la ligue
+                        row_data[lname] = "🔵" if lname in p_leagues_set else " "
+                    
+                    matrix_rows.append(row_data)
+
+                df_matrix = pd.DataFrame(matrix_rows)
+
+                st.markdown(f"### ⚔️ **{away_t} @ {home_t}** (Semaine {sel_week})")
+                st.dataframe(
+                    df_matrix,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Joueurs": st.column_config.Column("Joueurs / Ligues")
+                    }
+                )
