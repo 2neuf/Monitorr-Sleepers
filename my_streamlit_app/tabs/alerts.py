@@ -17,8 +17,7 @@ def render_alerts_tab(leagues, user_id):
             fetch_league_rosters.clear()
             st.toast("Composition des rosters rafraîchie avec succès !", icon="✅")
 
-    with col_debug:
-        debug_mode = st.checkbox("🔍 Activer le mode débogage (Inspection des IDs & Statuts)")
+
 
     players_dict = load_sleeper_players()
 
