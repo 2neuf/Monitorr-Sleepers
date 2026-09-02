@@ -120,4 +120,4 @@ with tab5:
     render_matchups_tab(group_a, group_b, threshold_group_a, season_year)
 
 with tab6:
-    render_alerts_tab(leagues_data, players_dict)
+    render_alerts_tab(leagues, user_id)
