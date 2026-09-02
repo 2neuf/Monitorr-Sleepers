@@ -11,39 +11,49 @@ def render_alerts_tab(leagues, user_id):
         st.info("Aucune donnée de ligue disponible.")
         return
 
-    # Bouton de rafraîchissement ciblé pour l'onglet Alerte
     col_btn, _ = st.columns([1, 2])
     with col_btn:
         if st.button("🔄 Rafraîchir l'analyse des Starters", use_container_width=True):
-            # Supprime le cache de la fonction fetch_league_rosters pour forcer la mise à jour des lineups
             fetch_league_rosters.clear()
             st.toast("Composition des rosters rafraîchie avec succès !", icon="✅")
 
-    # Chargement global du dictionnaire des joueurs Sleeper
     players_dict = load_sleeper_players()
 
     out_starters = []          # Out, IR, PUP, SUS
     doubtful_starters = []     # Doubtful
     questionable_starters = [] # Questionable
 
+    user_id_str = str(user_id)
+
     with st.spinner("Analyse des compositions de tes ligues en cours..."):
         for league in leagues:
             league_id = league.get("league_id")
             league_name = league.get("name", "Ligue sans nom")
 
-            # Récupération des rosters mis à jour
             rosters = fetch_league_rosters(league_id)
-            user_roster = next((r for r in rosters if r.get("owner_id") == user_id), None)
+            if not rosters:
+                continue
+
+            # Recherche sécurisée du roster (conversion en str + gestion co-owners)
+            user_roster = None
+            for r in rosters:
+                owner_id = str(r.get("owner_id")) if r.get("owner_id") else None
+                co_owners = [str(co) for co in (r.get("co_owners") or [])]
+                
+                if owner_id == user_id_str or user_id_str in co_owners:
+                    user_roster = r
+                    break
+
             if not user_roster:
                 continue
 
             starters = user_roster.get("starters", []) or []
 
             for p_id in starters:
-                if not p_id or p_id == "0":
+                if not p_id or str(p_id) == "0":
                     continue
 
-                p_info = players_dict.get(p_id, {})
+                p_info = players_dict.get(str(p_id), {})
                 status = p_info.get("status", "Active")
                 player_name = f"{p_info.get('first_name', '')} {p_info.get('last_name', '')}".strip()
                 pos = p_info.get("position", "N/A")
@@ -63,7 +73,6 @@ def render_alerts_tab(leagues, user_id):
                 elif status == "Questionable":
                     questionable_starters.append(row)
 
-    # Fonction pour créer les matrices Joueurs x Ligues
     def build_alert_matrix(data_list):
         if not data_list:
             return None
