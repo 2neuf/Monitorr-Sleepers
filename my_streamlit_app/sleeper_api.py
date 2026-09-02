@@ -1,6 +1,35 @@
-
-import streamlit as st
 import requests
+import streamlit as st
+
+@st.cache_data(ttl=86400)  # Cache de 24h
+def fetch_nfl_schedule(season_year="2026"):
+    schedule_by_week = {}
+    
+    # Parcourt les 18 semaines de la saison régulière
+    for week in range(1, 19):
+        url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?dates={season_year}&week={week}&seasontype=2"
+        try:
+            res = requests.get(url, timeout=5)
+            if res.status_code == 200:
+                data = res.json()
+                events = data.get("events", [])
+                games = []
+                for event in events:
+                    competitors = event["competitions"][0]["competitors"]
+                    home_team = next(c["team"]["abbreviation"] for c in competitors if c["homeAway"] == "home")
+                    away_team = next(c["team"]["abbreviation"] for c in competitors if c["homeAway"] == "away")
+                    
+                    games.append({
+                        "away": away_team,
+                        "home": home_team,
+                        "label": f"{away_team} @ {home_team}"
+                    })
+                schedule_by_week[week] = games
+        except Exception:
+            continue
+
+    return schedule_by_week
+
 
 @st.cache_data(ttl=86400)
 def load_sleeper_players():
