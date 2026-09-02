@@ -2,6 +2,55 @@ import streamlit as st
 import pandas as pd
 from config import get_nfl_schedule_2026
 from sleeper_api import fetch_nfl_schedule
+import streamlit as st
+from sleeper_api import fetch_full_nfl_schedule
+from helpers import get_current_nfl_week  # ou depuis sleeper_api selon où tu l'as mise
+
+def render_matchups_tab(group_a, group_b, excluded_leagues_input, threshold_group_a, season_year="2026"):
+    st.subheader("🏈 Matchups NFL & Évolution des Inactifs")
+    st.caption("Sélectionne une ou plusieurs semaines / rencontres pour additionner les joueurs concernés.")
+
+    # 1. Chargement instantané de toute la saison via le cache
+    full_schedule = fetch_full_nfl_schedule(season_year)
+
+    # 2. Détermination de la semaine courante automatique
+    current_week = get_current_nfl_week()
+
+    col_w, col_m = st.columns([1, 3])
+    
+    with col_w:
+        sel_week = st.number_input(
+            "Semaine NFL", 
+            min_value=1, 
+            max_value=18, 
+            value=current_week, 
+            step=1, 
+            key="tab5_week"
+        )
+
+    # Récupération des matchs de la semaine sélectionnée
+    available_matchups = full_schedule.get(sel_week, [])
+    matchup_options = [m["label"] for m in available_matchups]
+
+    with col_m:
+        # Sélection multiple de rencontres (par défaut : toutes les rencontres de la semaine)
+        selected_matchup_labels = st.multiselect(
+            "Rencontres à analyser",
+            options=matchup_options,
+            default=matchup_options,
+            key="tab5_matchups_multiselect"
+        )
+
+    # 3. Fusion et extraction de toutes les équipes impliquées dans les matchs sélectionnés
+    selected_teams = set()
+    for m in available_matchups:
+        if m["label"] in selected_matchup_labels:
+            selected_teams.add(m["away"])
+            selected_teams.add(m["home"])
+
+    # 4. Filtrage de tes joueurs (Groupes A / B) sur l'ensemble des équipes retenues
+    # Il te suffit d'utiliser 'selected_teams' pour filtrer ton tableau ou tes cartes de joueurs !
+
 
 def render_matchups_tab(group_a, group_b, excluded_leagues_input, threshold_group_a, season_year="2026"):
     st.subheader("🏈 Matchups NFL & Évolution des Inactifs")
