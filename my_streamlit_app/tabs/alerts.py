@@ -11,11 +11,14 @@ def render_alerts_tab(leagues, user_id):
         st.info("Aucune donnée de ligue disponible.")
         return
 
-    col_btn, _ = st.columns([1, 2])
+    col_btn, col_debug = st.columns([1, 2])
     with col_btn:
         if st.button("🔄 Rafraîchir l'analyse des Starters", use_container_width=True):
             fetch_league_rosters.clear()
             st.toast("Composition des rosters rafraîchie avec succès !", icon="✅")
+
+    with col_debug:
+        debug_mode = st.checkbox("🔍 Activer le mode débogage (Inspection des IDs & Statuts)")
 
     players_dict = load_sleeper_players()
 
@@ -24,6 +27,7 @@ def render_alerts_tab(leagues, user_id):
     questionable_starters = [] # Questionable
 
     user_id_str = str(user_id)
+    debug_logs = []
 
     with st.spinner("Analyse des compositions de tes ligues en cours..."):
         for league in leagues:
@@ -34,7 +38,7 @@ def render_alerts_tab(leagues, user_id):
             if not rosters:
                 continue
 
-            # Recherche sécurisée du roster (conversion en str + gestion co-owners)
+            # Recherche du roster utilisateur
             user_roster = None
             for r in rosters:
                 owner_id = str(r.get("owner_id")) if r.get("owner_id") else None
@@ -45,6 +49,8 @@ def render_alerts_tab(leagues, user_id):
                     break
 
             if not user_roster:
+                if debug_mode:
+                    debug_logs.append(f"❌ Roster introuvable pour la ligue : **{league_name}** (User ID recherché: `{user_id_str}`)")
                 continue
 
             starters = user_roster.get("starters", []) or []
@@ -53,25 +59,41 @@ def render_alerts_tab(leagues, user_id):
                 if not p_id or str(p_id) == "0":
                     continue
 
-                p_info = players_dict.get(str(p_id), {})
-                status = p_info.get("status", "Active")
+                p_str_id = str(p_id)
+                p_info = players_dict.get(p_str_id, {})
+
+                # Récupération croisée du statut (status vs injury_status)
+                status = p_info.get("injury_status") or p_info.get("status") or "Active"
                 player_name = f"{p_info.get('first_name', '')} {p_info.get('last_name', '')}".strip()
                 pos = p_info.get("position", "N/A")
                 team = p_info.get("team", "FA")
 
+                if debug_mode:
+                    debug_logs.append(f"🏈 Ligue: **{league_name}** | Joueur: `{player_name}` (`{p_str_id}`) | Statut détecté: `{status}`")
+
                 row = {
-                    "player_id": p_id,
+                    "player_id": p_str_id,
                     "name": f"{player_name} ({pos} - {team})",
                     "league": league_name,
-                    "status": injury_status
+                    "status": status
                 }
 
-                if status in ["Out", "IR", "PUP", "SUS"]:
-                    out_starters.append(row)
-                elif status == "Doubtful":
-                    doubtful_starters.append(row)
-                elif status == "Questionable":
+                # Normalisation de la casse pour la détection
+                status_upper = str(status).upper()
+
+                if any(s in status_upper for s in ["OUT", "IR", "PUP", "SUS", "DOUBTFUL"]):
+                    if "DOUBTFUL" in status_upper:
+                        doubtful_starters.append(row)
+                    else:
+                        out_starters.append(row)
+                elif "QUESTIONABLE" in status_upper or "QUESTION" in status_upper or status_upper == "Q":
                     questionable_starters.append(row)
+
+    # Affichage des logs si le mode débogage est activé
+    if debug_mode and debug_logs:
+        with st.expander("🛠️ Logs d'inspection de l'API Sleeper", expanded=True):
+            for log in debug_logs:
+                st.write(log)
 
     def build_alert_matrix(data_list):
         if not data_list:
