@@ -4,7 +4,7 @@ from sleeper_api import fetch_nfl_schedule
 from helpers import get_current_nfl_week
 
 
-def render_matchups_tab(group_a, group_b, excluded_leagues_input, threshold_group_a, season_year="2026"):
+def render_matchups_tab(group_a, group_b, threshold_group_a, season_year="2026"):
     st.subheader("🏈 Matchups NFL & Évolution des Inactifs")
 
     nfl_schedule = fetch_nfl_schedule(season_year)
@@ -60,11 +60,8 @@ def render_matchups_tab(group_a, group_b, excluded_leagues_input, threshold_grou
             for _, p_row in key_players_in_match.iterrows():
                 leagues_with_players.update(p_row["leagues"])
 
-            active_cols_leagues = sorted([
-                lname for lname in leagues_with_players 
-                if lname not in excluded_leagues_input
-            ])
-
+            active_cols_leagues = sorted(list(leagues_with_players))
+            
             if not active_cols_leagues:
                 st.info("Les joueurs clés de ces matchs sont dans des ligues actuellement masquées.")
             else:
