@@ -1,6 +1,6 @@
 import pandas as pd
 import streamlit as st
-from sleeper_api import fetch_full_nfl_schedule
+from sleeper_api import fetch_nfl_schedule
 from helpers import get_current_nfl_week
 
 
