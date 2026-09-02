@@ -98,48 +98,4 @@ def render_matchups_tab(group_a, group_b, excluded_leagues_input, threshold_grou
                     }
                 )
 
-    st.markdown("---")
-
-    st.subheader("⚠️ Évolution des Joueurs Inactifs / Injured Reserve (IR)")
-
-    inactive_statuses = ["Questionable", "Out", "Doubtful", "IR", "PUP", "SUS"]
-    inactive_a = group_a[group_a["status"].isin(inactive_statuses)].copy() if group_a is not None and not group_a.empty else pd.DataFrame()
-    inactive_b = group_b[group_b["status"].isin(inactive_statuses)].copy() if group_b is not None and not group_b.empty else pd.DataFrame()
-
-    col_in_1, col_in_2 = st.columns(2)
-    with col_in_1:
-        st.metric("Inactifs Groupe A (Cibles/Core)", f"{len(inactive_a)}")
-    with col_in_2:
-        st.metric("Inactifs Groupe B (Vente/Drop)", f"{len(inactive_b)}")
-
-    if not inactive_a.empty or not inactive_b.empty:
-        st.markdown("##### 📉 Impact ADP sur les assets affectés")
-        combined_inactive = pd.concat([inactive_a, inactive_b])
-
-        inactive_rows = []
-        for _, p_row in combined_inactive.iterrows():
-            current_rank = p_row["search_rank"]
-            if p_row["status"] in ["IR", "PUP", "SUS"]:
-                trend_val = "🔻 Chute forte (+35 positions)"
-            elif p_row["status"] in ["Out", "Doubtful"]:
-                trend_val = "🔻 Baisse modérée (+15 positions)"
-            else:
-                trend_val = "🟧 Stable (-0/5 positions)"
-
-            group_tag = "⭐ Groupe A" if p_row["shares"] >= threshold_group_a else "🔄 Groupe B"
-            inactive_rows.append({
-                "Joueur": f"{p_row['player_name']} ({p_row['position']} - {p_row['team']})",
-                "Groupe": group_tag,
-                "Statut": p_row["status"],
-                "Rank ADP": current_rank if current_rank < 9000 else "N/A",
-                "Tendance ADP": trend_val
-            })
-
-        df_inactive_trend = pd.DataFrame(inactive_rows)
-        st.dataframe(
-            df_inactive_trend,
-            use_container_width=True,
-            hide_index=True
-        )
-    else:
-        st.info("Aucun joueur inactif ou blessé détecté dans vos groupes d'exposition actuellement.")
+    
