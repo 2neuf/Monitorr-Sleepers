@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 from sleeper_api import load_sleeper_players, fetch_trending_players
 
-def render_waivers_tab(leagues, excluded_leagues_input, draft_completed_leagues, league_rosters_map, user_full_roster_objects, league_size_map):
+def render_waivers_tab(leagues, draft_completed_leagues, league_rosters_map, user_full_roster_objects, league_size_map):
     st.subheader("📥 Disponibilité des Waivers & Analyse Roster")
     st.caption("Affiche la disponibilité des joueurs (✅ Libre ou ❌ Pris) uniquement dans les ligues dont la draft est terminée.")
 
@@ -10,7 +10,7 @@ def render_waivers_tab(leagues, excluded_leagues_input, draft_completed_leagues,
 
     active_waiver_leagues = [
         l["name"] for l in leagues 
-        if l["name"] not in excluded_leagues_input and l["name"] in draft_completed_leagues
+        if l["name"] in draft_completed_leagues
     ]
 
     if not active_waiver_leagues:
