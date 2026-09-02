@@ -1,6 +1,19 @@
 import streamlit as st
 import pandas as pd
 from config import get_nfl_schedule_2026
+from sleeper_api import fetch_nfl_schedule
+
+def render_matchups_tab(group_a, group_b, excluded_leagues_input, threshold_group_a, season_year="2026"):
+    st.subheader("🏈 Matchups NFL & Évolution des Inactifs")
+    
+    col_w, _ = st.columns([1, 3])
+    with col_w:
+        sel_week = st.number_input("Semaine NFL", min_value=1, max_value=18, value=1, step=1, key="tab5_week")
+
+    nfl_schedule = fetch_nfl_schedule(season_year)
+    matchups_for_week = nfl_schedule.get(sel_week, [])
+    # ... la suite du code inchangée
+
 
 def render_matchups_tab(group_a, group_b, excluded_leagues_input, threshold_group_a):
     st.subheader("🏈 Matchups NFL & Évolution des Inactifs")
