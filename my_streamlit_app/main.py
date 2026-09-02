@@ -13,7 +13,8 @@ from tabs import (
     render_group_b_tab,
     render_radar_tab,
     render_waivers_tab,
-    render_matchups_tab
+    render_matchups_tab, 
+    render_alerts_tab
 )
 
 # Initialisation de la BDD Turso
@@ -87,12 +88,13 @@ pending_target_pairs = set((t["target_name"], t["league"]) for t in pending_trad
 pending_offered_pairs = set((p_name, t["league"]) for t in pending_trades for p_name in t["offered_names"])
 
 # --- NAVIGATION ONGLETS ---
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "⭐ Groupe A (Targets)", 
     "🔄 Groupe B (A Trader)", 
     "🎯 Radar de Trade", 
     "📥 Waivers",
-    "🏈 Matchups NFL"
+    "🏈 Matchups NFL",
+    " Alerte Inactifs"
 ])
 
 with tab1:
@@ -110,9 +112,12 @@ with tab3:
 
 with tab4:
     render_waivers_tab(
-        leagues, excluded_leagues_input, draft_completed_leagues, 
+        leagues, draft_completed_leagues, 
         league_rosters_map, user_full_roster_objects, league_size_map
     )
 
 with tab5:
-    render_matchups_tab(group_a, group_b, excluded_leagues_input, threshold_group_a, season_year)
+    render_matchups_tab(group_a, group_b, threshold_group_a, season_year)
+
+with tab6:
+    render_alerts_tab(leagues_data, players_dict)
