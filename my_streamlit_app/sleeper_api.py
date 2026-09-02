@@ -1,5 +1,24 @@
 import requests
 import streamlit as st
+from datetime import datetime
+
+def get_current_nfl_week() -> int:
+    """Calcule automatiquement la semaine NFL courante basée sur la date actuelle."""
+    today = datetime.now()
+    # Début estimé de la saison régulière (premier jeudi de septembre)
+    # Pour 2026, la semaine 1 démarre début septembre.
+    # Ajuste l'année/mois de référence si besoin :
+    season_start = datetime(today.year, 9, 3) 
+    
+    if today < season_start:
+        return 1
+    
+    delta_days = (today - season_start).days
+    current_week = (delta_days // 7) + 1
+    
+    # Borne entre 1 et 18
+    return max(1, min(current_week, 18))
+
 
 @st.cache_data(ttl=86400)  # Cache de 24h
 def fetch_nfl_schedule(season_year="2026"):
