@@ -9,6 +9,24 @@ from sleeper_api import (
     fetch_league_draft_info, 
     fetch_league_traded_picks
 )
+from datetime import datetime
+
+def get_current_nfl_week() -> int:
+    """Calcule automatiquement la semaine NFL courante basée sur la date actuelle."""
+    today = datetime.now()
+    # Début estimé de la saison régulière (premier jeudi de septembre)
+    # Pour 2026, la semaine 1 démarre début septembre.
+    # Ajuste l'année/mois de référence si besoin :
+    season_start = datetime(today.year, 9, 3) 
+    
+    if today < season_start:
+        return 1
+    
+    delta_days = (today - season_start).days
+    current_week = (delta_days // 7) + 1
+    
+    # Borne entre 1 et 18
+    return max(1, min(current_week, 18))
 
 def get_league_format_badge(roster_positions, league_settings):
     """Génère le badge émoji selon le format (ex: ⚡🏰 SF Dynasty)."""
