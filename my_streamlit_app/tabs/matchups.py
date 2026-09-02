@@ -8,7 +8,7 @@ def render_matchups_tab(group_a, group_b, excluded_leagues_input, threshold_grou
     st.subheader("🏈 Matchups NFL & Évolution des Inactifs")
 
     # 1. Chargement du calendrier complet en cache
-    nfl_schedule = fetch_full_nfl_schedule(season_year)
+    nfl_schedule = fetch_nfl_schedule(season_year)
 
     # 2. Semaine courante automatique par défaut
     current_week = get_current_nfl_week()
