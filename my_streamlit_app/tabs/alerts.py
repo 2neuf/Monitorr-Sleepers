@@ -11,6 +11,14 @@ def render_alerts_tab(leagues, user_id):
         st.info("Aucune donnée de ligue disponible.")
         return
 
+    # Bouton de rafraîchissement ciblé pour l'onglet Alerte
+    col_btn, _ = st.columns([1, 2])
+    with col_btn:
+        if st.button("🔄 Rafraîchir l'analyse des Starters", use_container_width=True):
+            # Supprime le cache de la fonction fetch_league_rosters pour forcer la mise à jour des lineups
+            fetch_league_rosters.clear()
+            st.toast("Composition des rosters rafraîchie avec succès !", icon="✅")
+
     # Chargement global du dictionnaire des joueurs Sleeper
     players_dict = load_sleeper_players()
 
@@ -23,7 +31,7 @@ def render_alerts_tab(leagues, user_id):
             league_id = league.get("league_id")
             league_name = league.get("name", "Ligue sans nom")
 
-            # Récupération des rosters de la ligue
+            # Récupération des rosters mis à jour
             rosters = fetch_league_rosters(league_id)
             user_roster = next((r for r in rosters if r.get("owner_id") == user_id), None)
             if not user_roster:
