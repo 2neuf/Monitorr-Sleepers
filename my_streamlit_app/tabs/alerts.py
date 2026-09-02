@@ -1,28 +1,3 @@
-    def build_league_alert_table(data_list):
-        if not data_list:
-            return None
-
-        df = pd.DataFrame(data_list)
-        
-        # Application de l'ordre d'origine Sleeper via type Categorical
-        df["Ligue"] = pd.Categorical(df["Ligue"], categories=league_order, ordered=True)
-
-        grouped = df.groupby("Ligue", observed=True).agg({
-            "Joueur Aligné": lambda x: ", ".join(x),
-            "Statut": "count"
-        }).reset_index()
-
-        # Renommage explicite et aligné avec les données
-        grouped = grouped.rename(columns={
-            "Statut": "Nombre",
-            "Joueur Aligné": "Joueurs Inactifs Alignés"
-        })
-        
-        grouped["Nombre"] = grouped["Nombre"].apply(lambda n: f"🚨 {n}")
-        grouped = grouped.sort_values("Ligue")
-
-        return grouped[["Ligue", "Nombre", "Joueurs Inactifs Alignés"]]
-
 import pandas as pd
 import streamlit as st
 from sleeper_api import fetch_league_rosters, load_sleeper_players
@@ -132,9 +107,13 @@ def render_alerts_tab(leagues, user_id):
             "Statut": "count"
         }).reset_index()
 
-        grouped.columns = ["Ligue", "Nombre", "Joueurs Inactifs Alignés"]
-        grouped["Nombre"] = grouped["Nombre"].apply(lambda n: f"🚨 {n}")
+        # Renommage explicite et aligné avec les données
+        grouped = grouped.rename(columns={
+            "Statut": "Nombre",
+            "Joueur Aligné": "Joueurs Inactifs Alignés"
+        })
         
+        grouped["Nombre"] = grouped["Nombre"].apply(lambda n: f"🚨 {n}")
         grouped = grouped.sort_values("Ligue")
 
         return grouped[["Ligue", "Nombre", "Joueurs Inactifs Alignés"]]
