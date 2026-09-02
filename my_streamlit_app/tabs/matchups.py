@@ -12,20 +12,7 @@ def render_matchups_tab(group_a, group_b, excluded_leagues_input, threshold_grou
 
     nfl_schedule = fetch_nfl_schedule(season_year)
     matchups_for_week = nfl_schedule.get(sel_week, [])
-    # ... la suite du code inchangée
-
-
-def render_matchups_tab(group_a, group_b, excluded_leagues_input, threshold_group_a):
-    st.subheader("🏈 Matchups NFL & Évolution des Inactifs")
-    st.caption("Matrice des Joueurs Clés (Groupe A) x Ligues pour la rencontre sélectionnée et suivi dynamique de l'ADP des inactifs.")
-
-    col_w, _ = st.columns([1, 3])
-    with col_w:
-        sel_week = st.number_input("Semaine NFL", min_value=1, max_value=18, value=1, step=1, key="tab5_week")
-
-    nfl_schedule = get_nfl_schedule_2026()
-    matchups_for_week = nfl_schedule.get(sel_week, [])
-
+    
     if not matchups_for_week:
         st.info(f"Aucune rencontre enregistrée pour la semaine {sel_week}.")
     else:
