@@ -5,7 +5,7 @@ from sleeper_api import fetch_league_rosters, load_sleeper_players
 
 def render_alerts_tab(leagues, user_id):
     st.subheader("🚨 Alerte Joueurs Inactifs Alignés (Starters)")
-    st.caption("Détection des joueurs alignés dans tes compositions de départ qui risquent de ne pas jouer sur TOUTES tes ligues.")
+    st.caption("Aperçu par ligue des starters alignés qui risquent de ne pas jouer.")
 
     if not leagues:
         st.info("Aucune donnée de ligue disponible.")
@@ -18,7 +18,7 @@ def render_alerts_tab(leagues, user_id):
             st.toast("Composition des rosters rafraîchie avec succès !", icon="✅")
 
     with col_debug:
-        debug_mode = st.checkbox("🔍 Activer le mode débogage (Inspection des IDs & Statuts)")
+        debug_mode = st.checkbox("🔍 Activer le mode débogage")
 
     players_dict = load_sleeper_players()
 
@@ -38,7 +38,6 @@ def render_alerts_tab(leagues, user_id):
             if not rosters:
                 continue
 
-            # Recherche du roster utilisateur
             user_roster = None
             for r in rosters:
                 owner_id = str(r.get("owner_id")) if r.get("owner_id") else None
@@ -50,7 +49,7 @@ def render_alerts_tab(leagues, user_id):
 
             if not user_roster:
                 if debug_mode:
-                    debug_logs.append(f"❌ Roster introuvable pour la ligue : **{league_name}** (User ID recherché: `{user_id_str}`)")
+                    debug_logs.append(f"❌ Roster introuvable : **{league_name}**")
                 continue
 
             starters = user_roster.get("starters", []) or []
@@ -62,23 +61,20 @@ def render_alerts_tab(leagues, user_id):
                 p_str_id = str(p_id)
                 p_info = players_dict.get(p_str_id, {})
 
-                # Récupération croisée du statut (status vs injury_status)
                 status = p_info.get("injury_status") or p_info.get("status") or "Active"
                 player_name = f"{p_info.get('first_name', '')} {p_info.get('last_name', '')}".strip()
                 pos = p_info.get("position", "N/A")
                 team = p_info.get("team", "FA")
 
                 if debug_mode:
-                    debug_logs.append(f"🏈 Ligue: **{league_name}** | Joueur: `{player_name}` (`{p_str_id}`) | Statut détecté: `{status}`")
+                    debug_logs.append(f"🏈 **{league_name}** | `{player_name}` | `{status}`")
 
                 row = {
-                    "player_id": p_str_id,
-                    "name": f"{player_name} ({pos} - {team})",
-                    "league": league_name,
-                    "status": status
+                    "Ligue": league_name,
+                    "Joueur Aligné": f"{player_name} ({pos} - {team})",
+                    "Statut": status
                 }
 
-                # Normalisation de la casse pour la détection
                 status_upper = str(status).upper()
 
                 if any(s in status_upper for s in ["OUT", "IR", "PUP", "SUS", "DOUBTFUL"]):
@@ -89,40 +85,31 @@ def render_alerts_tab(leagues, user_id):
                 elif "QUESTIONABLE" in status_upper or "QUESTION" in status_upper or status_upper == "Q":
                     questionable_starters.append(row)
 
-    # Affichage des logs si le mode débogage est activé
     if debug_mode and debug_logs:
-        with st.expander("🛠️ Logs d'inspection de l'API Sleeper", expanded=True):
+        with st.expander("🛠️ Logs d'inspection API", expanded=True):
             for log in debug_logs:
                 st.write(log)
 
-    def build_alert_matrix(data_list):
+    # Nouvelle logique : Groupement par Ligue avec liste de joueurs
+    def build_league_alert_table(data_list):
         if not data_list:
             return None
 
         df = pd.DataFrame(data_list)
-        pivot_df = df.pivot_table(
-            index="name",
-            columns="league",
-            aggfunc="size",
-            fill_value=0
-        )
+        grouped = df.groupby("Ligue").agg({
+            "Joueur Aligné": lambda x: ", ".join(x),
+            "Statut": "count"
+        }).reset_index()
 
-        matrix_rows = []
-        for player, row in pivot_df.iterrows():
-            total_starters = row.sum()
-            row_dict = {
-                "Joueurs Starters": player,
-                "Ligues affectées": f"🔴 {total_starters}"
-            }
-            for league_col in pivot_df.columns:
-                row_dict[league_col] = "🚨 ALIGNÉ" if row[league_col] > 0 else " "
-            matrix_rows.append(row_dict)
-
-        return pd.DataFrame(matrix_rows)
+        grouped.columns = ["Ligue", "Joueurs Inactifs Alignés", "Nombre"]
+        grouped["Nombre"] = grouped["Nombre"].apply(lambda n: f"🚨 {n}")
+        
+        # Réordonne les colonnes : Ligue | Nombre | Joueurs
+        return grouped[["Ligue", "Nombre", "Joueurs Inactifs Alignés"]]
 
     # --- TABLEAU 1 : INACTIFS CONFIRMÉS ---
     st.markdown("### 🛑 1. Urgence Absolue — Inactifs Confirmés (Out / IR / PUP / SUS)")
-    df_out = build_alert_matrix(out_starters)
+    df_out = build_league_alert_table(out_starters)
     if df_out is not None:
         st.dataframe(df_out, use_container_width=True, hide_index=True)
     else:
@@ -132,7 +119,7 @@ def render_alerts_tab(leagues, user_id):
 
     # --- TABLEAU 2 : DOUBTFUL ---
     st.markdown("### ⚠️ 2. Très Incertains (Doubtful)")
-    df_doubtful = build_alert_matrix(doubtful_starters)
+    df_doubtful = build_league_alert_table(doubtful_starters)
     if df_doubtful is not None:
         st.dataframe(df_doubtful, use_container_width=True, hide_index=True)
     else:
@@ -142,7 +129,7 @@ def render_alerts_tab(leagues, user_id):
 
     # --- TABLEAU 3 : QUESTIONABLE ---
     st.markdown("### 🟧 3. À surveiller (Questionable)")
-    df_quest = build_alert_matrix(questionable_starters)
+    df_quest = build_league_alert_table(questionable_starters)
     if df_quest is not None:
         st.dataframe(df_quest, use_container_width=True, hide_index=True)
     else:
