@@ -90,21 +90,28 @@ def render_alerts_tab(leagues, user_id):
             for log in debug_logs:
                 st.write(log)
 
-    # Nouvelle logique : Groupement par Ligue avec liste de joueurs
+    # Ordre officiel des ligues fourni par Sleeper
+    league_order = [l.get("name", "Ligue sans nom") for l in leagues]
+
     def build_league_alert_table(data_list):
         if not data_list:
             return None
 
         df = pd.DataFrame(data_list)
-        grouped = df.groupby("Ligue").agg({
+        
+        # Application de l'ordre d'origine Sleeper via type Categorical
+        df["Ligue"] = pd.Categorical(df["Ligue"], categories=league_order, ordered=True)
+
+        grouped = df.groupby("Ligue", observed=True).agg({
             "Joueur Aligné": lambda x: ", ".join(x),
             "Statut": "count"
         }).reset_index()
 
-        grouped.columns = ["Ligue", "Joueurs Inactifs Alignés", "Nombre"]
+        grouped.columns = ["Ligue", "Nombre", "Joueurs Inactifs Alignés"]
         grouped["Nombre"] = grouped["Nombre"].apply(lambda n: f"🚨 {n}")
         
-        # Réordonne les colonnes : Ligue | Nombre | Joueurs
+        grouped = grouped.sort_values("Ligue")
+
         return grouped[["Ligue", "Nombre", "Joueurs Inactifs Alignés"]]
 
     # --- TABLEAU 1 : INACTIFS CONFIRMÉS ---
