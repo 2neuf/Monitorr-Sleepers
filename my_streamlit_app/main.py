@@ -1,15 +1,14 @@
-
 import streamlit as st
 
 # --- INITIALISATION CONFIGURATION ---
 from config import setup_page_config
 setup_page_config()
 
-# --- IMPORT MODULES ET BDD ---
+# --- IMPORT MODULES, SIDEBAR ET TABS ---
 from db import init_db, load_persisted_state, load_excluded_leagues_db
 from helpers import get_league_format_badge, compute_all_data_and_opportunities
-from components import (
-    render_sidebar,
+from sidebar import render_sidebar
+from tabs import (
     render_group_a_tab,
     render_group_b_tab,
     render_radar_tab,
@@ -30,16 +29,19 @@ if "trade_history" not in st.session_state:
 if st.session_state.get("db_warning"):
     st.error(f"⚠️ **Alerte BDD Turso :** {st.session_state['db_warning']}")
 
+if "excluded_leagues" not in st.session_state or not st.session_state["excluded_leagues"]:
+    st.session_state["excluded_leagues"] = load_excluded_leagues_db()
+
 accepted_trades = [t for t in st.session_state["trade_history"] if t["status"] == "Accepté"]
 accepted_trades_tuple = tuple(
     (t["league"], t.get("target_id"), t["target_name"], tuple(t["offered_names"]))
     for t in accepted_trades
 )
 
-# Affichage temporaire de la sidebar pour obtenir les paramètres
-user_id_input = st.sidebar.text_input("ID Sleeper", value="742374956750540800", key="temp_user_id")
-season_year = "2026"
-threshold_group_a = 3
+# Récupération de l'ID depuis la session state si déjà saisi
+user_id = st.session_state.get("user_id_input", "742374956750540800")
+season_year = st.session_state.get("season_year", "2026")
+threshold_group_a = st.session_state.get("threshold_group_a", 3)
 
 # Calcul principal avec Spinner
 with st.spinner("Analyse et calcul des opportunités..."):
@@ -55,12 +57,8 @@ with st.spinner("Analyse et calcul des opportunités..."):
         user_full_roster_objects,
         draft_completed_leagues,
     ) = compute_all_data_and_opportunities(
-        user_id_input, season_year, threshold_group_a, accepted_trades_tuple
+        user_id, season_year, threshold_group_a, accepted_trades_tuple
     )
-
-if df_rosters is None:
-    st.warning("Aucun roster trouvé pour cet utilisateur/saison.")
-    st.stop()
 
 league_badge_map = {
     l["name"]: get_league_format_badge(l.get("roster_positions"), l.get("settings", {}))
@@ -69,13 +67,18 @@ league_badge_map = {
 
 all_league_names = [l["name"] for l in leagues] if leagues else []
 
-if "excluded_leagues" not in st.session_state or not st.session_state["excluded_leagues"]:
-    st.session_state["excluded_leagues"] = load_excluded_leagues_db()
+# Rendu complet et unique de la Sidebar
+(
+    user_id_input, 
+    season_year, 
+    threshold_group_a, 
+    filter_upgrade_pure, 
+    filter_trade_urgent
+) = render_sidebar(all_league_names, league_badge_map, group_b)
 
-# Rendu complet de la Sidebar
-user_id_input, season_year, threshold_group_a, filter_upgrade_pure, filter_trade_urgent = render_sidebar(
-    all_league_names, league_badge_map, group_b
-)
+if df_rosters is None:
+    st.warning("Aucun roster trouvé pour cet utilisateur/saison.")
+    st.stop()
 
 excluded_leagues_input = st.session_state["excluded_leagues"]
 
