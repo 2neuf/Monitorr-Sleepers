@@ -115,4 +115,4 @@ with tab4:
     )
 
 with tab5:
-    render_matchups_tab(group_a, group_b, excluded_leagues_input, threshold_group_a)
+    render_matchups_tab(group_a, group_b, excluded_leagues_input, threshold_group_a, season_year)
