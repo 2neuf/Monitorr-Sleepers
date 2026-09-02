@@ -63,7 +63,7 @@ def render_alerts_tab(leagues, user_id):
                     "player_id": p_id,
                     "name": f"{player_name} ({pos} - {team})",
                     "league": league_name,
-                    "status": status
+                    "status": injury_status
                 }
 
                 if status in ["Out", "IR", "PUP", "SUS"]:
